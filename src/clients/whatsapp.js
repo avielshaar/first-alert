@@ -16,7 +16,14 @@ function initializeWhatsApp(callbacks) {
         authStrategy: new LocalAuth({ dataPath: "./.wwebjs_auth" }),
         puppeteer: {
             headless: true,
-            args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+            args: [
+                "--no-sandbox", 
+                "--disable-setuid-sandbox", 
+                "--disable-dev-shm-usage", 
+                "--disable-gpu",
+                "--disable-site-isolation-trials", 
+                "--disable-features=IsolateOrigins"
+            ],
         }
     });
 

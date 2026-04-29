@@ -1,5 +1,5 @@
 /**
- * Message Processing and Event Tracking Module
+ * Message Processing and Event Tracking Module (Hybrid Sync)
  */
 
 const { log } = require("../logger");
@@ -10,7 +10,6 @@ const activeEvents = {};
 let lastPublished = null;
 
 function setLastPublished(source, target, estimated_time) {
-    // FIX: Ensure resetting the state actually nullifies the object
     if (!source && !target && !estimated_time) {
         lastPublished = null;
         return;
@@ -22,59 +21,13 @@ function getLastPublished() { return lastPublished; }
 function getActiveEvents()  { return activeEvents; }
 
 function mergeTargets(existing, incoming) {
-    if (!existing) return incoming || "";
-    if (!incoming) return existing || "";
-
-    const normalize = (str) => {
-        let s = str.replace(/-/g, ', ').replace(/ ו/g, ', ').replace(/וגם /g, ', '); 
-        return s.split(',').map(x => {
-            let cleaned = x.trim();
-            cleaned = cleaned.replace(/^ה(מרכז|דרום|צפון|שרון|שפלה|נגב)/, '$1');
-            cleaned = cleaned.replace(/^אזור /, ''); // Strip "אזור" filler word
-            return cleaned;
-        }).filter(x => x && x !== 'ו');
-    };
-
-    const existingParts = normalize(existing);
-    const incomingParts = normalize(incoming);
-    const finalParts = [...existingParts];
-
-    for (const inc of incomingParts) {
-        let foundMatch = false;
-        const incBase = inc.split(' ')[0]; 
-
-        for (let i = 0; i < finalParts.length; i++) {
-            const ex = finalParts[i];
-            const exBase = ex.split(' ')[0];
-
-            if (incBase === exBase) {
-                foundMatch = true;
-                if (inc.length > ex.length) {
-                    finalParts[i] = inc; 
-                }
-                break;
-            }
-        }
-
-        if (!foundMatch) {
-            finalParts.push(inc);
-        }
-    }
-
-    return Array.from(new Set(finalParts)).sort().join(', '); 
-}
-
-function sanitizeTime(aiTimeString) {
-    if (!aiTimeString) return "";
-    if (aiTimeString.includes("דקות") || aiTimeString.includes("minutes")) {
-        const numbers = aiTimeString.match(/\d+/);
-        if (numbers) {
-            const addedTime = new Date(Date.now() + parseInt(numbers[0]) * 60000);
-            return addedTime.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jerusalem' });
-        }
-        return "";
-    }
-    return aiTimeString.trim();
+    const arr1 = (existing || "").split(",").map(s => s.trim()).filter(Boolean);
+    const arr2 = (incoming || "").split(",").map(s => s.trim()).filter(Boolean);
+    let merged = [...new Set([...arr1, ...arr2])];
+    merged = merged.filter(item => {
+        return !merged.some(other => other !== item && other.includes(item));
+    });
+    return merged.sort().join(", ");
 }
 
 function pickBestEvent(candidates) {
@@ -83,57 +36,34 @@ function pickBestEvent(candidates) {
         const totalInfo = (e.source ? 1 : 0) + (e.target ? 1 : 0) + (e.estimated_time ? 1 : 0);
         return { key, totalInfo, channelCount: e.channels.size };
     });
-
     scored.sort((a, b) => b.totalInfo - a.totalInfo || b.channelCount - a.channelCount);
-    const best = scored[0];
-    
-    if (scored.length > 1 && scored[0].totalInfo === scored[1].totalInfo) {
-        const e1 = activeEvents[scored[0].key];
-        const e2 = activeEvents[scored[1].key];
-        if (!e1.source         && e2.source)         { e1.source         = e2.source; }
-        if (!e1.target         && e2.target)         { e1.target         = e2.target; }
-        if (!e1.estimated_time && e2.estimated_time) { e1.estimated_time = e2.estimated_time; }
-    }
-
-    return best.key;
+    return scored[0].key;
 }
 
 async function processMessage(channelId, messageText, callbacks) {
     const now = Date.now();
 
-    const spamKeywords = ["להצטרפות", "לחצו כאן", "t.me", "פרסום", "לערוץ"];
-    if (spamKeywords.some(word => messageText.includes(word)) && messageText.length < 80) {
-        log(`[Filter] ❌ Regex Spam Match — ignoring.`);
-        return;
-    }
-
     const classification = await classifyMessage(channelId, messageText, lastPublished);
-    classification.estimated_time = sanitizeTime(classification.estimated_time); 
-    log(`[AI] Category: ${classification.category} | Reasoning: ${classification.reasoning}`);
+    log(`[Hybrid-AI] Category: ${classification.category} | Reasoning: ${classification.reasoning}`);
 
     if (classification.category === "UPDATE_TO_LAST" && lastPublished) {
-        const mergedTarget = mergeTargets(lastPublished.target, classification.target);
-        const normalizedLastTarget = mergeTargets(lastPublished.target, ""); 
-        
-        const hasNewTarget = mergedTarget !== normalizedLastTarget;
-        const hasNewTime   = classification.estimated_time && classification.estimated_time !== lastPublished.estimated_time;
+        const isSourceNew = classification.source && lastPublished.source && classification.source !== lastPublished.source;
+        if (!isSourceNew) {
+            const mergedTarget = mergeTargets(lastPublished.target, classification.target);
+            const hasNewTarget = mergedTarget !== lastPublished.target;
+            const hasNewTime   = classification.estimated_time && classification.estimated_time !== lastPublished.estimated_time;
 
-        if (!hasNewTarget && !hasNewTime) {
-            log(`[Update] 🔁 UPDATE_TO_LAST but no actual new detail — skipping.`);
-            return;
+            if (hasNewTarget || hasNewTime) {
+                log(`[Update] 📝 Single-channel update — publishing.`);
+                const updateType = hasNewTarget && hasNewTime ? "target+time" : hasNewTarget ? "target" : "time";
+                await callbacks.update(
+                    { source: lastPublished.source, target: mergedTarget, estimated_time: classification.estimated_time || lastPublished.estimated_time },
+                    lastPublished,
+                    updateType,
+                );
+                return;
+            }
         }
-
-        log(`[Update] 📝 Single-channel update — publishing.`);
-        const updateType = hasNewTarget && hasNewTime ? "target+time"
-                         : hasNewTarget               ? "target"
-                         :                              "time";
-
-        await callbacks.update(
-            { source: lastPublished.source, target: mergedTarget, estimated_time: classification.estimated_time || lastPublished.estimated_time },
-            lastPublished,
-            updateType,
-        );
-        return;
     }
 
     if (classification.category !== "LAUNCH_REPORT") {
@@ -148,17 +78,22 @@ async function processMessage(channelId, messageText, callbacks) {
     const hasSource = srcPart && srcPart.trim() !== "";
     const hasTarget = tgtPart && tgtPart.trim() !== "";
 
-    const eventKeysToTrack = [eventKey];
+    // התיקון הקריטי: אם יש לנו מקור מזהה (איראן), אנחנו לא תופסים את המפתח הריק "->" !
+    const eventKeysToTrack = [];
     if (hasSource && hasTarget) {
+        eventKeysToTrack.push(`${srcPart}->${tgtPart}`);
         eventKeysToTrack.push(`${srcPart}->`);
         eventKeysToTrack.push(`->${tgtPart}`);
-    } else if (hasSource || hasTarget) {
-        eventKeysToTrack.push(`->`);
+    } else if (hasSource) {
+        eventKeysToTrack.push(`${srcPart}->`);
+    } else if (hasTarget) {
+        eventKeysToTrack.push(`->${tgtPart}`);
+    } else {
+        eventKeysToTrack.push(`->`); // רק הודעה בלי שום מידע תקבל את המפתח הזה
     }
 
     for (const key of Object.keys(activeEvents)) {
         if (now - activeEvents[key].firstSeen > CONTEXT_WINDOW_MS) {
-            log(`[Events] 🗑️  Expired: "${key}"`);
             delete activeEvents[key];
         }
     }
@@ -174,13 +109,12 @@ async function processMessage(channelId, messageText, callbacks) {
                 firstSeen:      now,
             };
         }
-
         const event = activeEvents[currentKey];
         event.channels.add(channelId);
         event.messages.push({ channel: channelId, text: messageText, time: now });
 
-        if (classification.source         && !event.source)         event.source         = classification.source;
-        if (classification.target)                                  event.target         = mergeTargets(event.target, classification.target);
+        if (classification.source && !event.source) event.source = classification.source;
+        if (classification.target) event.target = mergeTargets(event.target, classification.target);
         if (classification.estimated_time && !event.estimated_time) event.estimated_time = classification.estimated_time;
     }
 
@@ -199,48 +133,42 @@ async function processMessage(channelId, messageText, callbacks) {
     const keyToPublish = readyForPublish.length === 1 ? readyForPublish[0] : pickBestEvent(readyForPublish);
     const finalEvent = activeEvents[keyToPublish];
 
-    if (!lastPublished) {
-        log(`[AI] 🚨 First ever publish — "${keyToPublish}"`);
+    const isDifferentArena = lastPublished && finalEvent.source && lastPublished.source && finalEvent.source !== lastPublished.source;
+
+    if (!lastPublished || isDifferentArena) {
+        log(`[Hybrid] 🚨 First publish for arena — "${keyToPublish}"`);
         await callbacks.alert(finalEvent.source, finalEvent.target, finalEvent.estimated_time);
-        for (const key of eventKeysToTrack) delete activeEvents[key];
-        return;
-    }
-
-    const normalizedFinalTarget = mergeTargets(finalEvent.target, "");
-    const normalizedLastTarget = mergeTargets(lastPublished.target, "");
-
-    const isSameSource = finalEvent.source && lastPublished.source && finalEvent.source.trim() === lastPublished.source.trim();
-    const isSameTarget = normalizedFinalTarget === normalizedLastTarget;
-    const isSameTime   = finalEvent.estimated_time && lastPublished.estimated_time && finalEvent.estimated_time.trim() === lastPublished.estimated_time.trim();
-
-    if (isSameSource && isSameTarget && (isSameTime || (!finalEvent.estimated_time && !lastPublished.estimated_time))) {
-        log(`[Dedup] 🔁 Exact duplicate — skipping.`);
-        for (const key of eventKeysToTrack) delete activeEvents[key];
+        delete activeEvents[keyToPublish]; 
         return;
     }
 
     const newInfoCheck = await checkForNewInfo(finalEvent.messages, lastPublished);
-    newInfoCheck.estimated_time = sanitizeTime(newInfoCheck.estimated_time); 
     
     if (newInfoCheck.has_new_info) {
         const finalMergedTarget = mergeTargets(lastPublished.target, newInfoCheck.target);
-        const isTargetNew = finalMergedTarget !== normalizedLastTarget;
-        const isTimeNew = newInfoCheck.estimated_time && newInfoCheck.estimated_time !== lastPublished.estimated_time;
-        const isSourceNew = newInfoCheck.source && newInfoCheck.source !== lastPublished.source;
+        const finalTime = newInfoCheck.estimated_time || lastPublished.estimated_time;
+        const finalSource = newInfoCheck.source || lastPublished.source;
 
-        if (!isTargetNew && !isTimeNew && !isSourceNew) {
-             log(`[Dedup] 🔁 AI claimed new info, but programmatically nothing changed — skipping.`);
-             for (const key of eventKeysToTrack) delete activeEvents[key];
+        const isTargetNew = finalMergedTarget !== (lastPublished.target || "");
+        const isTimeNew = finalTime && finalTime !== lastPublished.estimated_time;
+
+        if (!isTargetNew && !isTimeNew) {
+             log(`[Dedup] 🔁 Programmatically nothing changed — skipping.`);
+             delete activeEvents[keyToPublish];
              return;
         }
 
-        log(`[AI] 🚨 New info confirmed: ${newInfoCheck.reasoning}`);
-        await callbacks.alert(newInfoCheck.source || lastPublished.source, finalMergedTarget, newInfoCheck.estimated_time || lastPublished.estimated_time);
+        log(`[Hybrid] 🚨 New info confirmed: ${newInfoCheck.reasoning}`);
+        await callbacks.update(
+            { source: finalSource, target: finalMergedTarget, estimated_time: finalTime },
+            lastPublished,
+            isTargetNew && isTimeNew ? "target+time" : isTargetNew ? "target" : "time"
+        );
     } else {
         log(`[Dedup] 🔁 Skipped — ${newInfoCheck.reasoning}`);
     }
     
-    for (const key of eventKeysToTrack) delete activeEvents[key];
+    delete activeEvents[keyToPublish];
 }
 
 module.exports = { processMessage, setLastPublished, getLastPublished, getActiveEvents };
