@@ -6,7 +6,7 @@ const fs = require("fs");
 const { TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
 const input = require("input");
-const { log } = require("../logger");
+const { log } = require("../utils/logger");
 const { TELEGRAM_API_ID, TELEGRAM_API_HASH, ALERT_CHANNELS } = require("../config");
 const { processMessage } = require("../messaging/processor");
 

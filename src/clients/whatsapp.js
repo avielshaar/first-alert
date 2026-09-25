@@ -3,7 +3,7 @@
  */
 
 const { Client, LocalAuth } = require("whatsapp-web.js");
-const { log } = require("../logger");
+const { log } = require("../utils/logger");
 const { TARGET_WHATSAPP_GROUP } = require("../config");
 const { onReady } = require("./handlers/ready");
 

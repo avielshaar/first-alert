@@ -2,7 +2,7 @@
  * Message Processing and Event Tracking Module (Hybrid Sync)
  */
 
-const { log } = require("../logger");
+const { log } = require("../utils/logger");
 const { classifyMessage, checkForNewInfo } = require("./classifier");
 const { CONTEXT_WINDOW_MS, MIN_CHANNELS_TO_ACT } = require("../config");
 

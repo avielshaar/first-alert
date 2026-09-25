@@ -1,4 +1,4 @@
-const { log } = require("./logger");
+const { log } = require("./utils/logger");
 const { initializeWhatsApp, sendAlert, sendUpdate, shutdownWhatsApp } = require("./clients/whatsapp");
 const { shutdownTelegram } = require("./clients/telegram");
 const { setLastPublished } = require("./messaging/processor");
