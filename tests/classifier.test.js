@@ -1,3 +1,4 @@
+process.env.GEMINI_API_KEY = process.env.GEMINI_API_KEY || "test-key";
 const { extractTargets, extractTime, mergeAndCleanTargets } = require('../src/messaging/classifier');
 
 describe('Classifier Utility Functions', () => {

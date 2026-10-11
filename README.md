@@ -35,7 +35,7 @@ Target WhatsApp group
 ## Tech stack
 
 - Runtime: Node.js 22+
-- AI: Google Generative AI SDK (`@google/generative-ai`) with the stable `gemini-3.5-flash-lite` model by default
+- AI: Google GenAI SDK (`@google/genai`) with the `gemini-3.5-flash-lite` model by default
 - Telegram: `telegram` (GramJS MTProto client)
 - WhatsApp: `whatsapp-web.js`, Puppeteer, `qrcode-terminal`
 - Configuration: `dotenv`

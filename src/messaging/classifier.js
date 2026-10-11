@@ -3,12 +3,11 @@
  */
 
 require("../config"); // Load .env before reading GEMINI_API_KEY when this module is imported directly.
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenAI } = require("@google/genai");
 const { log } = require("../utils/logger");
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 // Override without a code change if Google retires or changes model availability again.
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
-const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
 const STRICT_BLACKLIST = [
     "חזלש", "חזל\"ש", "שווא", "תרגיל", "יירוט מוצלח", "יורטו", "יורט", 
@@ -51,7 +50,7 @@ const REGION_MAP = [
 async function callAIWithRetry(prompt, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            return await model.generateContent(prompt);
+            return await genAI.models.generateContent({ model: GEMINI_MODEL, contents: prompt });
         } catch (error) {
             const message = String(error && error.message ? error.message : error);
             const status = error && (error.status || error.statusCode || error.code);
@@ -191,7 +190,7 @@ async function classifyMessage(channelId, messageText, lastPublished, messageTim
 
     try {
         const result = await callAIWithRetry(prompt);
-        const responseText = result && result.response && result.response.text();
+        const responseText = result && typeof result.text === "string" ? result.text : null;
         const jsonMatch = typeof responseText === "string" ? responseText.match(/\{[\s\S]*\}/) : null;
         if (!jsonMatch) throw new Error("Gemini returned no valid JSON object.");
 
