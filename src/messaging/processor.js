@@ -111,7 +111,8 @@ function loadProcessorState() {
     } catch (error) {
         log(`[State] Could not load processor state from ${stateFile}: ${error.message || error}`);
         throw new Error(
-            "Processor state is invalid or unreadable. Refusing to start to avoid losing pending incident evidence. " +
+            "Processor state is invalid or unreadable: " + (error.message || String(error)) + ". " +
+            "Refusing to start to avoid losing pending incident evidence. " +
             "Back up and repair the state file at " + stateFile + ", then restart.",
             { cause: error }
         );
