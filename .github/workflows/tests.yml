@@ -2,9 +2,9 @@ name: First-Alert CI
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: ["main", "master", "beta"]
   pull_request:
-    branches: ["main", "master"]
+    branches: ["main", "master", "beta"]
 
 jobs:
   build-and-test:
@@ -25,3 +25,6 @@ jobs:
 
       - name: Run Jest tests
         run: npm test
+
+      - name: Build Docker image
+        run: docker build --tag first-alert:ci .

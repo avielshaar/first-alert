@@ -39,7 +39,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+# The postinstall patch must be present and applied before dev dependencies are pruned.
+COPY patches ./patches
+RUN npm ci
+RUN npm prune --omit=dev --ignore-scripts
 COPY . .
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]

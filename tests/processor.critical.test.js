@@ -61,6 +61,28 @@ describe("critical processor regressions", () => {
         expect(Object.keys(getActiveEvents())).toHaveLength(0);
     });
 
+    test("messages from one channel cannot satisfy cross-channel corroboration", async () => {
+        await processMessage("channel-1", "report-1", callbacks, 101, 1767254400);
+        await processMessage("channel-1", "report-2", callbacks, 102, 1767254401);
+
+        expect(callbacks.alert).not.toHaveBeenCalled();
+        const events = Object.values(getActiveEvents());
+        expect(events).toHaveLength(1);
+        expect([...events[0].channels]).toEqual(["channel-1"]);
+    });
+
+    test("reports from different sources are kept in separate events", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({ ...launch, source: "איראן", target: "מרכז" })
+            .mockResolvedValueOnce({ ...launch, source: "לבנון", target: "מרכז" });
+
+        await processMessage("channel-1", "report-1", callbacks, 101, 1767254400);
+        await processMessage("channel-2", "report-2", callbacks, 201, 1767254401);
+
+        expect(Object.keys(getActiveEvents())).toHaveLength(2);
+        expect(callbacks.alert).not.toHaveBeenCalled();
+    });
+
     test("a processing error is not acknowledged as an irrelevant message", async () => {
         classifyMessage.mockResolvedValue({ category: "PROCESSING_ERROR", retryable: true, reasoning: "API unavailable" });
         const result = await processMessage("channel-1", "report", callbacks, 101, 1767254400);
