@@ -30,11 +30,17 @@ function prepareWhatsAppAuthPath(options = {}) {
         fsImpl.existsSync(legacyPath)
     ) {
         fsImpl.mkdirSync(path.dirname(authPath), { recursive: true });
-        fsImpl.cpSync(legacyPath, authPath, {
-            recursive: true,
-            errorOnExist: true,
-            force: false,
-        });
+        try {
+            fsImpl.cpSync(legacyPath, authPath, {
+                recursive: true,
+                errorOnExist: true,
+                force: false,
+            });
+        } catch (error) {
+            // Do not leave a partial target that would block a retry on the next startup.
+            fsImpl.rmSync(authPath, { recursive: true, force: true });
+            throw error;
+        }
         fsImpl.rmSync(legacyPath, { recursive: true, force: true });
         return { path: authPath, migrated: true, legacyPath };
     }

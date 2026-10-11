@@ -1,5 +1,8 @@
 name: First-Alert CI
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: ["main", "master", "beta"]
@@ -20,6 +23,11 @@ jobs:
           node-version: "22.x"
           cache: "npm"
 
+      # Reconcile stale transitive metadata one time; the updated lockfile is committed
+      # below, after tests and the container build both succeed.
+      - name: Reconcile dependency lockfile
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
       - name: Install dependencies from lockfile
         run: npm ci
 
@@ -28,3 +36,14 @@ jobs:
 
       - name: Build Docker image
         run: docker build --tag first-alert:ci .
+
+      - name: Commit lockfile reconciliation (beta only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/beta'
+        run: |
+          if ! git diff --quiet -- package-lock.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add package-lock.json
+            git commit -m "chore: sync npm lockfile"
+            git push origin HEAD:beta
+          fi
