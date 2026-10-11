@@ -15,53 +15,36 @@ const { processMessage } = require("../messaging/processor");
 
 let telegramClient = null;
 const cursorFile = process.env.TELEGRAM_CURSOR_FILE || "./data/telegram-cursors.json";
-const lastSeenMessageIds = {};
-const initializedChannels = new Set();
+const { readCursorState, writeCursorState } = require("./telegram-cursor-store");
+const cursorState = readCursorState(cursorFile, ALERT_CHANNELS);
+const lastSeenMessageIds = { ...cursorState.cursors };
+const initializedChannels = new Set(cursorState.initializedChannels);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let polling = false;
 let pollingTask = null;
 const retryAfterByChannel = new Map();
 
-function loadMessageCursors() {
-    try {
-        if (!fs.existsSync(cursorFile)) return;
-        const parsed = JSON.parse(fs.readFileSync(cursorFile, "utf8"));
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            throw new Error("cursor file must contain a JSON object");
-        }
-        for (const [channelId, rawId] of Object.entries(parsed)) {
-            const id = Number(rawId);
-            if (Number.isSafeInteger(id) && id >= 0) {
-                lastSeenMessageIds[channelId] = id;
-                initializedChannels.add(String(channelId));
-            }
-        }
-    } catch (err) {
-        log(`[Telegram] Could not load cursor file ${cursorFile}: ${err.message || err}`);
-    }
+if (cursorState.error) {
+    log(`[Telegram] Cursor state is invalid: ${cursorState.error}. Fresh baselining is disabled to avoid skipping unprocessed alerts.`);
 }
 
 function persistMessageCursor(channelId, messageId) {
-    const numericId = Number(messageId);
-    if (!Number.isSafeInteger(numericId) || numericId < 0) {
-        throw new Error(`Invalid Telegram message cursor for ${channelId}`);
-    }
-    const next = { ...lastSeenMessageIds, [String(channelId)]: numericId };
-    const tempFile = `${cursorFile}.tmp`;
-    fs.mkdirSync(require("path").dirname(tempFile), { recursive: true });
-    fs.writeFileSync(tempFile, JSON.stringify(next, null, 2), { mode: 0o600 });
-    try { fs.chmodSync(tempFile, 0o600); } catch (_) { /* permissions may be unsupported on some platforms */ }
-    fs.renameSync(tempFile, cursorFile);
-    lastSeenMessageIds[String(channelId)] = numericId;
+    const next = writeCursorState(cursorFile, lastSeenMessageIds, channelId, messageId);
+    Object.assign(lastSeenMessageIds, next);
     initializedChannels.add(String(channelId));
 }
-
-loadMessageCursors();
 
 async function startTelegramClient(callbacks) {
     if (telegramClient && polling) {
         log("[Telegram] Client is already running; skipping duplicate initialization.");
         return;
+    }
+    if (cursorState.error) {
+        throw new Error(
+            "Telegram cursor state is invalid (" + cursorState.error +
+            "). Refusing to establish a fresh baseline because it could skip unprocessed alerts. " +
+            "Back up and repair the cursor file, then restart the application."
+        );
     }
 
     log("[Telegram] Initializing client...");
