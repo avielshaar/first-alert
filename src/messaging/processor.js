@@ -162,7 +162,9 @@ function isDifferentIncident(event, published) {
 }
 
 function cleanupExpiredEvents(now) {
-    const expired = Object.entries(activeEvents).filter(([, event]) => now - event.lastSeen > CONTEXT_WINDOW_MS);
+    const expired = Object.entries(activeEvents).filter(([, event]) =>
+        !event.deliveryPending && now - event.lastSeen > CONTEXT_WINDOW_MS
+    );
     if (expired.length === 0) return true;
     for (const [id] of expired) delete activeEvents[id];
     if (persistProcessorState()) return true;
@@ -270,6 +272,14 @@ function mergeClassificationIntoEvent(event, classification) {
 async function publishNewAlert(event, callbacks) {
     const result = await callbacks.alert(event.source, event.target, event.estimated_time);
     if (!result) {
+        // A failed external delivery is an outbox item, not a short-lived correlation event.
+        // Keep it until delivery succeeds so an outage longer than CONTEXT_WINDOW_MS cannot
+        // silently discard an alert while Telegram's cursor is correctly held back.
+        event.deliveryPending = true;
+        const persisted = persistProcessorState();
+        if (!persisted) {
+            log(`[Dispatch] Could not persist pending delivery state for ${event.id}; Telegram cursor will remain unchanged.`);
+        }
         log(`[Dispatch] ❌ Alert delivery failed; retaining ${event.id} for retry.`);
         return false;
     }
@@ -299,6 +309,12 @@ async function publishUpdate(event, callbacks) {
         updateType
     );
     if (!result) {
+        // Failed updates must survive the same context-window cleanup as failed new alerts.
+        event.deliveryPending = true;
+        const persisted = persistProcessorState();
+        if (!persisted) {
+            log(`[Dispatch] Could not persist pending update state for ${event.id}; Telegram cursor will remain unchanged.`);
+        }
         log(`[Dispatch] ❌ Update delivery failed; retaining ${event.id} for retry.`);
         return false;
     }

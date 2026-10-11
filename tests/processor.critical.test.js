@@ -54,7 +54,10 @@ describe("critical processor regressions", () => {
         const firstAttempt = await processMessage("channel-2", "report-2", callbacks, 202, 1767254400);
         expect(firstAttempt).toBe(false);
         expect(Object.keys(getActiveEvents())).toHaveLength(1);
+        expect(Object.values(getActiveEvents())[0].deliveryPending).toBe(true);
 
+        // Even an extended WhatsApp outage must not let context cleanup drop the alert.
+        Object.values(getActiveEvents())[0].lastSeen = Date.now() - 10 * 60 * 1000;
         const retry = await processMessage("channel-2", "report-2", callbacks, 202, 1767254400);
         expect(retry).toBe(true);
         expect(callbacks.alert).toHaveBeenCalledTimes(2);
@@ -81,6 +84,31 @@ describe("critical processor regressions", () => {
 
         expect(Object.keys(getActiveEvents())).toHaveLength(2);
         expect(callbacks.alert).not.toHaveBeenCalled();
+    });
+
+    test("a failed update delivery survives expiration of the context window", async () => {
+        setLastPublished("איראן", "מרכז", "10:00");
+        classifyMessage.mockResolvedValue({
+            category: "UPDATE_TO_LAST",
+            reasoning: "new target",
+            source: "איראן",
+            target: "מרכז, צפון",
+            estimated_time: "10:15",
+            event_key: "איראן->מרכז, צפון",
+        });
+        callbacks.update.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+        await processMessage("channel-1", "update-1", callbacks, 111, 1767254400);
+        const firstAttempt = await processMessage("channel-2", "update-2", callbacks, 222, 1767254401);
+        expect(firstAttempt).toBe(false);
+        expect(Object.values(getActiveEvents())[0].deliveryPending).toBe(true);
+
+        Object.values(getActiveEvents())[0].lastSeen = Date.now() - 10 * 60 * 1000;
+        const retry = await processMessage("channel-2", "update-2", callbacks, 222, 1767254401);
+
+        expect(retry).toBe(true);
+        expect(callbacks.update).toHaveBeenCalledTimes(2);
+        expect(Object.keys(getActiveEvents())).toHaveLength(0);
     });
 
     test("a processing error is not acknowledged as an irrelevant message", async () => {
