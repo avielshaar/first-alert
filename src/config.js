@@ -27,9 +27,22 @@ const ALERT_CHANNELS        = process.env.ALERT_CHANNELS
 // Target WhatsApp group name where verified alerts will be sent
 const TARGET_WHATSAPP_GROUP = process.env.WHATSAPP_GROUPS;
 
-// Time window for grouping related messages (2 minutes)
-// Messages within this window are considered part of the same event
-const CONTEXT_WINDOW_MS   = 120 * 1000;
+// Time window for grouping related messages (2 minutes).
+// Messages within this window are considered part of the same event.
+const CONTEXT_WINDOW_MS = 120 * 1000;
+
+// A previously published alert is only used as the deduplication baseline for a limited time.
+// This prevents an old alert (including one restored after a restart) from suppressing a new
+// incident indefinitely. Set to 0 to disable cross-message deduplication against prior alerts.
+const configuredDedupMinutes = process.env.LAST_PUBLISHED_DEDUP_WINDOW_MINUTES;
+const parsedDedupMinutes = configuredDedupMinutes == null || configuredDedupMinutes.trim() === ""
+    ? 15
+    : Number(configuredDedupMinutes);
+const LAST_PUBLISHED_DEDUP_WINDOW_MINUTES =
+    Number.isFinite(parsedDedupMinutes) && parsedDedupMinutes >= 0
+        ? parsedDedupMinutes
+        : 15;
+const LAST_PUBLISHED_DEDUP_WINDOW_MS = LAST_PUBLISHED_DEDUP_WINDOW_MINUTES * 60 * 1000;
 
 // Minimum number of channels required to confirm and publish an alert
 // To prevent false alerts, we require corroboration from at least 2 channels
@@ -41,5 +54,7 @@ module.exports = {
     ALERT_CHANNELS,
     TARGET_WHATSAPP_GROUP,
     CONTEXT_WINDOW_MS,
+    LAST_PUBLISHED_DEDUP_WINDOW_MINUTES,
+    LAST_PUBLISHED_DEDUP_WINDOW_MS,
     MIN_CHANNELS_TO_ACT,
 };
