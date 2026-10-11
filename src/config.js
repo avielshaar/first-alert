@@ -20,12 +20,17 @@ const TELEGRAM_API_ID       = parseInt(process.env.TELEGRAM_API_ID);
 const TELEGRAM_API_HASH     = process.env.TELEGRAM_API_HASH;
 
 // Array of Telegram channel IDs to monitor for launch alerts
-const ALERT_CHANNELS        = process.env.ALERT_CHANNELS 
-    ? process.env.ALERT_CHANNELS.split(',').map(id => id.trim()) 
-    : [];
+const rawAlerts = process.env.ALERT_CHANNELS || "";
+const rawTests  = process.env.TEST_CHANNELS || "";
+
+const ALERT_CHANNELS = `${rawAlerts},${rawTests}`
+    .split(",")
+    .map(id => id.trim())
+    .filter(Boolean);
 
 // Target WhatsApp group name where verified alerts will be sent
 const TARGET_WHATSAPP_GROUP = process.env.WHATSAPP_GROUPS;
+const WHATSAPP_INVITE_LINK = process.env.WHATSAPP_INVITE_LINK || "";
 
 // Time window for grouping related messages (2 minutes).
 // Messages within this window are considered part of the same event.
@@ -53,6 +58,7 @@ module.exports = {
     TELEGRAM_API_HASH,
     ALERT_CHANNELS,
     TARGET_WHATSAPP_GROUP,
+    WHATSAPP_INVITE_LINK,
     CONTEXT_WINDOW_MS,
     LAST_PUBLISHED_DEDUP_WINDOW_MINUTES,
     LAST_PUBLISHED_DEDUP_WINDOW_MS,

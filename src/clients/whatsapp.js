@@ -50,7 +50,7 @@ function initializeWhatsApp(callbacks) {
             log(`[WhatsApp]   Target group located: ${whatsappGroupChat.name}`);
             await onReady(callbacks);
         } catch (err) {
-            log("[WhatsApp]   Error fetching chats: " + err);
+            log("[WhatsApp]   Error fetching chats: " + (err?.stack || String(err)));
         }
     });
 
@@ -89,11 +89,16 @@ async function sendAlert(source, target, estimated_time) {
         return null;
     }
 
+    if (!WHATSAPP_INVITE_LINK) {
+    log("[WhatsApp] Cannot send alert - WHATSAPP_INVITE_LINK is not configured.");
+    return null;
+}
+
     const alertMsg =
         `🚨 *צבע אדום* 🚨\n\n` +
         `זירה: ${source          || "לא ידוע"}\n` +
         `מרחב: ${target            || "לא ידוע"}\n` +
-        `זמן: ${estimated_time || "מיידי"}\n\n` +
+        `זמן: ${estimated_time || "לא ידוע"}\n\n` +
         `הצטרפו: ${WHATSAPP_INVITE_LINK}`;
 
     try {
@@ -122,7 +127,7 @@ async function sendUpdate(updatedFields, prevPublished, updateType) {
         `🔄 *${updateLabel}* 🔄\n\n` +
         `זירה: ${updatedFields.source          || prevPublished.source || "לא ידוע"}\n` +
         `מרחב: ${updatedFields.target            || prevPublished.target || "לא ידוע"}\n` +
-        `זמן: ${updatedFields.estimated_time || prevPublished.estimated_time || "מיידי"}\n\n` +
+        `זמן: ${updatedFields.estimated_time || prevPublished.estimated_time || "לא ידוע"}\n\n` +
         `הצטרפו: ${WHATSAPP_INVITE_LINK}`;
 
     try {
