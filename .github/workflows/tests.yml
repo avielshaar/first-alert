@@ -1,13 +1,10 @@
 name: First-Alert CI
 
-permissions:
-  contents: write
-
 on:
   push:
-    branches: ["beta"]
+    branches: ["main", "master", "beta"]
   pull_request:
-    branches: ["beta"]
+    branches: ["main", "master", "beta"]
 
 jobs:
   build-and-test:
@@ -23,31 +20,44 @@ jobs:
           node-version: "22.x"
           cache: "npm"
 
-      - name: Reconcile dependency lockfile (temporary beta-only migration step)
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-
       - name: Install dependencies from lockfile
         run: npm ci
 
-      - name: Report dependency vulnerability summary
+      - name: Report dependency audit findings
         continue-on-error: true
         run: |
-          npm audit --json > "$RUNNER_TEMP/npm-audit.json" || true
-          node -e 'const r=require(process.env.RUNNER_TEMP + "/npm-audit.json"); const v=Object.entries(r.vulnerabilities||{}).map(([name,x])=>({name,severity:x.severity,isDirect:x.isDirect,range:x.range,fixAvailable:x.fixAvailable})); console.log(JSON.stringify({metadata:r.metadata?.vulnerabilities,vulnerabilities:v},null,2));'
+          npm audit --json > "$RUNNER_TEMP/npm-audit-full.json" || true
+          npm audit --omit=dev --json > "$RUNNER_TEMP/npm-audit-production.json" || true
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          function report(file) {
+            const result = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, file), "utf8"));
+            const vulnerabilities = Object.entries(result.vulnerabilities || {}).map(([name, item]) => ({
+              name,
+              severity: item.severity,
+              direct: item.isDirect,
+              range: item.range,
+              advisories: (item.via || [])
+                .filter(entry => typeof entry === "object")
+                .map(entry => ({ title: entry.title, url: entry.url, range: entry.range })),
+              fixAvailable: item.fixAvailable,
+            }));
+            console.log(JSON.stringify({
+              report: file,
+              totals: result.metadata && result.metadata.vulnerabilities,
+              vulnerabilities,
+            }, null, 2));
+          }
+          report("npm-audit-full.json");
+          report("npm-audit-production.json");
+          NODE
+
+      - name: Check JavaScript syntax
+        run: find src tests -type f -name '*.js' -print0 | xargs -0 -n1 node --check
 
       - name: Run Jest tests
         run: npm test
 
       - name: Build Docker image
         run: docker build --tag first-alert:ci .
-
-      - name: Commit lockfile reconciliation (beta only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/beta'
-        run: |
-          if ! git diff --quiet -- package-lock.json; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add package-lock.json
-            git commit -m "chore: sync npm lockfile for Google GenAI SDK"
-            git push origin HEAD:beta
-          fi

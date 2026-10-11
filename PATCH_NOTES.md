@@ -16,7 +16,13 @@ This file describes the implementation in this repository; it is not an archive 
 10. **Configuration and secrets:** Startup validates required values before creating messaging clients; .env, .env.* except .env.example, sessions, runtime data, and logs are ignored by Git.
 11. **Dependency patching:** patches/whatsapp-web.js+1.34.7.patch is applied by patch-package during install. The Docker build applies it while development dependencies are present and prunes them only afterward.
 12. **Maintained Gemini SDK:** The classifier uses Google's supported @google/genai SDK instead of the deprecated, unmaintained @google/generative-ai package.
-13. **CI:** The beta branch runs a clean install, Jest tests, and Docker image build.
+13. **CI:** The beta branch runs a clean install, a JavaScript syntax check, Jest tests, and Docker image build. It also reports full and production dependency audit results; audit reporting is currently non-blocking because the existing WhatsApp/Puppeteer dependency chain has upstream advisories that need a separate compatibility-tested migration.
+
+## Open security finding — not cleared
+
+The most recent npm audit report for the current dependency graph showed **32 findings overall (13 high, 19 moderate)** and **9 high-severity findings in the production dependency graph** after development dependencies were pruned for the container. High findings include the Puppeteer/browser-download/proxy dependency chain and the WhatsApp client dependency. The automated npm audit fix proposal attempts downgrades that would risk invalidating the repository's WhatsApp Web patch, so this branch does not apply an unverified forced downgrade.
+
+Treat this as an unresolved security risk before production deployment. Resolve it in a separate change by updating or replacing the affected WhatsApp/Puppeteer stack and validating a real authenticated WhatsApp send/receive session; a passing unit test and Docker build alone do not validate that runtime.
 
 ## Validate before deployment
 
