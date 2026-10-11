@@ -47,7 +47,9 @@ first-alert/
 ├── src/
 │   ├── clients/
 │   │   ├── telegram.js
+│   │   ├── telegram-cursor-store.js
 │   │   ├── whatsapp.js
+│   │   ├── whatsapp-helpers.js
 │   │   └── handlers/ready.js
 │   ├── messaging/
 │   │   ├── classifier.js
@@ -71,16 +73,18 @@ Copy `.env.example` to `.env` and fill in your own values:
 TELEGRAM_API_ID=your_telegram_api_id
 TELEGRAM_API_HASH=your_telegram_api_hash
 ALERT_CHANNELS=-1001234567890,-1009876543210
+TEST_CHANNELS=
 GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-3.5-flash-lite
 WHATSAPP_GROUPS=YourExactWhatsAppGroupName
+WHATSAPP_INVITE_LINK=https://chat.whatsapp.com/your-invite-code
 TELEGRAM_CURSOR_FILE=./data/telegram-cursors.json
 FIRST_ALERT_STATE_FILE=./data/processor-state.json
 TELEGRAM_SESSION_FILE=./data/telegram_session
 WHATSAPP_AUTH_PATH=./data/wwebjs_auth
 ```
 
-`GEMINI_MODEL` is optional; the source defaults to `gemini-3.5-flash-lite`. WhatsApp group matching is exact: set `WHATSAPP_GROUPS` to the complete group name. If zero or multiple exact matches exist, sending is disabled rather than guessing.
+`GEMINI_MODEL` is optional; the source defaults to `gemini-3.5-flash-lite`. Startup validates required settings before creating messaging clients and reports missing values explicitly. `TEST_CHANNELS` is optional and is monitored alongside `ALERT_CHANNELS`; duplicate channel IDs are removed. WhatsApp group matching is exact: set `WHATSAPP_GROUPS` to the complete group name. If zero or multiple exact matches exist, sending is disabled rather than guessing.
 
 ## Run locally
 
@@ -105,7 +109,9 @@ Persist runtime state between container replacements by mounting the data direct
 docker run --env-file .env -v "$PWD/data:/app/data" first-alert
 ```
 
-Do not commit `.env`, Telegram sessions, WhatsApp authentication, or files under `data/`.
+Do not commit `.env`, other `.env.*` files, Telegram sessions, WhatsApp authentication, or files under `data/`. Git ignores those files by default.
+
+If the saved Telegram cursor file is malformed or contains an invalid cursor for a configured channel, the bot refuses to establish a fresh baseline. This is deliberate: silently treating a damaged state file as a first run could skip messages. Back up and repair the cursor file, then restart.
 
 ## Tests
 
@@ -113,4 +119,4 @@ Do not commit `.env`, Telegram sessions, WhatsApp authentication, or files under
 npm test
 ```
 
-Tests cover utility behavior and critical regressions such as classifier failures, relative time parsing, event deduplication, delivery retries, and update corroboration.
+Tests cover configuration validation, cursor-store corruption and atomic writes, classifier failures and prompt boundaries, WhatsApp auth migration and exact group selection, event deduplication, delayed delivery retries, and update corroboration. CI runs npm ci, npm test, and a Docker image build for beta as well as the mainline branches.
