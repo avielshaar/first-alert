@@ -1,17 +1,29 @@
-# Never copy credentials, live sessions, or runtime state into the image.
+# Git metadata and workflow definitions
+.git/
+.github/
+
+# Dependencies are installed inside the target image
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Do not bake credentials into an image
 .env
 .env.*
 !.env.example
+
+# Local sessions and state. Persist /app/data as a mounted volume.
+data/
 .telegram_session
-.telegram_cursors.json
-.telegram_cursors.json.tmp
-.first-alert-state.json
-.first-alert-state.json.tmp
+.telegram_cursors.json*
+.first-alert-state.json*
 .wwebjs_auth/
 .wwebjs_cache/
-data/
-node_modules/
-.git/
-.github/
+telegram-cursors.json*
+processor-state.json*
+
+# Logs, archives, and platform metadata
 *.log
+src.zip
 .DS_Store
