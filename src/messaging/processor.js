@@ -72,7 +72,7 @@ function loadProcessorState() {
         const loadedEvents = {};
         let highestEventNumber = 0;
         for (const [id, raw] of Object.entries(parsed.activeEvents)) {
-            const keyMatch = /^event-(\\d+)$/.exec(id);
+            const keyMatch = /^event-(\d+)$/.exec(id);
             if (!keyMatch || !raw || typeof raw !== "object" || Array.isArray(raw)) {
                 throw new Error("invalid pending event entry: " + id);
             }
