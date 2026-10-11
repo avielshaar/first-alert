@@ -2,7 +2,13 @@ const path = require("path");
 const os = require("os");
 process.env.FIRST_ALERT_STATE_FILE = path.join(os.tmpdir(), `first-alert-${process.pid}-${Date.now()}.json`);
 
-const { setLastPublished, getLastPublished, getActiveEvents } = require('../src/messaging/processor');
+const {
+    setLastPublished,
+    getLastPublished,
+    getActiveEvents,
+    expireStaleLastPublished,
+} = require('../src/messaging/processor');
+const { LAST_PUBLISHED_DEDUP_WINDOW_MS } = require('../src/config');
 
 describe('Processor State Management', () => {
     beforeEach(() => {
@@ -23,6 +29,31 @@ describe('Processor State Management', () => {
     it('should clear the last published event when passing null values', () => {
         setLastPublished('עזה', 'שדרות', '12:00');
         setLastPublished(null, null, null);
+        expect(getLastPublished()).toBeNull();
+    });
+
+    it('expires a published alert after the deduplication window', () => {
+        setLastPublished('לבנון', 'דרום', '');
+        getLastPublished().publishedAt = Date.now() - LAST_PUBLISHED_DEDUP_WINDOW_MS - 1;
+
+        expect(expireStaleLastPublished(Date.now())).toBe(true);
+        expect(getLastPublished()).toBeNull();
+    });
+
+    it('keeps a recently published alert as the deduplication baseline', () => {
+        if (LAST_PUBLISHED_DEDUP_WINDOW_MS === 0) return;
+        setLastPublished('לבנון', 'דרום', '');
+        getLastPublished().publishedAt = Date.now() - Math.max(0, LAST_PUBLISHED_DEDUP_WINDOW_MS - 1);
+
+        expect(expireStaleLastPublished(Date.now())).toBe(false);
+        expect(getLastPublished()).not.toBeNull();
+    });
+
+    it('expires legacy state without a publication timestamp', () => {
+        setLastPublished('לבנון', 'דרום', '');
+        delete getLastPublished().publishedAt;
+
+        expect(expireStaleLastPublished(Date.now())).toBe(true);
         expect(getLastPublished()).toBeNull();
     });
 

@@ -9,7 +9,11 @@
 
 const { log } = require("../utils/logger");
 const { classifyMessage, checkForNewInfo } = require("./classifier");
-const { CONTEXT_WINDOW_MS, MIN_CHANNELS_TO_ACT } = require("../config");
+const {
+    CONTEXT_WINDOW_MS,
+    LAST_PUBLISHED_DEDUP_WINDOW_MS,
+    MIN_CHANNELS_TO_ACT,
+} = require("../config");
 
 const stateFile = process.env.FIRST_ALERT_STATE_FILE || "./data/processor-state.json";
 const activeEvents = {};
@@ -71,6 +75,7 @@ function loadProcessorState() {
 }
 
 loadProcessorState();
+expireStaleLastPublished(Date.now());
 
 function setLastPublished(source, target, estimated_time) {
     const previous = lastPublished;
@@ -93,6 +98,38 @@ function setLastPublished(source, target, estimated_time) {
 
 function getLastPublished() { return lastPublished; }
 function getActiveEvents() { return activeEvents; }
+
+// Expire the publication baseline, not the two-minute event-correlation window.
+// A missing/invalid timestamp is treated as stale so legacy/corrupt state cannot suppress alerts forever.
+function expireStaleLastPublished(now = Date.now()) {
+    if (!lastPublished) return false;
+
+    const rawPublishedAt = lastPublished.publishedAt;
+    const publishedAt = Number(rawPublishedAt);
+    const hasValidTimestamp =
+        rawPublishedAt !== undefined &&
+        rawPublishedAt !== null &&
+        Number.isFinite(publishedAt) &&
+        publishedAt > 0 &&
+        publishedAt <= now + 60_000;
+    const ageMs = now - publishedAt;
+
+    if (hasValidTimestamp && ageMs < LAST_PUBLISHED_DEDUP_WINDOW_MS) return false;
+
+    const reason = !hasValidTimestamp
+        ? "missing or invalid publication timestamp"
+        : `${Math.max(0, Math.floor(ageMs / 60_000))} minutes old`;
+
+    lastPublished = null;
+    if (persistProcessorState()) {
+        log(`[Dedup] Previous published alert expired (${reason}); new reports will be evaluated as new incidents.`);
+    } else {
+        // Keep the in-memory expiry even if disk is temporarily unavailable. A restart will
+        // re-evaluate the persisted timestamp and expire it again instead of suppressing forever.
+        log("[State] Expired alert cleared in memory, but the state-file update failed.");
+    }
+    return true;
+}
 
 function splitTargets(value) {
     return (value || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -271,6 +308,7 @@ async function publishUpdate(event, callbacks) {
 
 async function processMessage(channelId, messageText, callbacks, messageId = null, messageTimestamp = null) {
     const now = Date.now();
+    expireStaleLastPublished(now);
     if (!cleanupExpiredEvents(now)) return false;
 
     let classification;
@@ -352,6 +390,7 @@ module.exports = {
     getLastPublished,
     getActiveEvents,
     // Exported for deterministic unit tests only.
+    expireStaleLastPublished,
     mergeTargets,
     targetsOverlap,
 };

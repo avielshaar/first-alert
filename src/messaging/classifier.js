@@ -228,9 +228,17 @@ async function classifyMessage(channelId, messageText, lastPublished, messageTim
     if (aiCategory === "UPDATE_TO_LAST" && lastPublished) {
         const isDifferentSource = source && lastPublished.source && source !== lastPublished.source;
         if (isDifferentSource) {
-            aiCategory = "LAUNCH_REPORT"; 
+            aiCategory = "LAUNCH_REPORT";
             aiReasoning = "Deterministic override: Source mismatch, changing UPDATE to new LAUNCH_REPORT.";
         }
+    }
+
+    // An update only makes sense while a recent published incident exists. Once the processor
+    // expires that baseline, a live report with a source/target becomes a new incident; otherwise
+    // the classifier's UPDATE_TO_LAST result would fall through as IRRELEVANT and be dropped.
+    if (aiCategory === "UPDATE_TO_LAST" && !lastPublished && (source || target)) {
+        aiCategory = "LAUNCH_REPORT";
+        aiReasoning = "No recent published alert is available to update; treating this live report as a new incident.";
     }
 
     if (aiCategory === "UPDATE_TO_LAST" || (aiCategory === "LAUNCH_REPORT" && lastPublished)) {
