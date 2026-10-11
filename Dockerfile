@@ -1,7 +1,7 @@
-FROM node:18-bullseye-slim
+FROM node:22-bookworm-slim
 
-# Install necessary OS dependencies for Puppeteer to run headless Chrome
-RUN apt-get update && apt-get install -y \
+# Runtime dependencies for Puppeteer's bundled Chromium.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     fonts-liberation \
     libasound2 \
@@ -14,7 +14,6 @@ RUN apt-get update && apt-get install -y \
     libexpat1 \
     libfontconfig1 \
     libgbm1 \
-    libgcc1 \
     libglib2.0-0 \
     libgtk-3-0 \
     libnspr4 \
@@ -35,17 +34,13 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxss1 \
     libxtst6 \
-    lsb-release \
-    wget \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
 COPY package*.json ./
-
-RUN npm install
-
+RUN npm ci --omit=dev
 COPY . .
-
+RUN mkdir -p /app/data
+VOLUME ["/app/data"]
 CMD ["npm", "start"]

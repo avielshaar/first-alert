@@ -6,19 +6,37 @@ const { setLastPublished } = require("./messaging/processor");
 const callbacks = {
     async alert(source, target, estimated_time) {
         const result = await sendAlert(source, target, estimated_time);
-        if (result) setLastPublished(result.source, result.target, result.estimated_time);
+        if (!result) return false;
+        setLastPublished(result.source, result.target, result.estimated_time);
+        return true;
     },
     async update(updatedFields, prevPublished, updateType) {
         const result = await sendUpdate(updatedFields, prevPublished, updateType);
-        if (result) setLastPublished(result.source, result.target, result.estimated_time);
+        if (!result) return false;
+        setLastPublished(result.source, result.target, result.estimated_time);
+        return true;
     },
 };
 
 initializeWhatsApp(callbacks);
 
-process.on('SIGINT', async () => {
-    log("\n[System] Shutting down...");
-    await shutdownWhatsApp();
-    await shutdownTelegram();
+let shuttingDown = false;
+async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`[System] Shutting down (${signal})...`);
+    try {
+        await shutdownWhatsApp();
+    } catch (err) {
+        log(`[System] WhatsApp shutdown warning: ${err.message || err}`);
+    }
+    try {
+        await shutdownTelegram();
+    } catch (err) {
+        log(`[System] Telegram shutdown warning: ${err.message || err}`);
+    }
     process.exit(0);
-});
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));

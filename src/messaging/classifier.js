@@ -2,10 +2,13 @@
  * True Hybrid Classification Module (AI Intent + Deterministic Data)
  */
 
+require("../config"); // Load .env before reading GEMINI_API_KEY when this module is imported directly.
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { log } = require("../utils/logger");
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
+// Override without a code change if Google retires or changes model availability again.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
 const STRICT_BLACKLIST = [
     "חזלש", "חזל\"ש", "שווא", "תרגיל", "יירוט מוצלח", "יורטו", "יורט", 
@@ -50,15 +53,19 @@ async function callAIWithRetry(prompt, maxRetries = 3) {
         try {
             return await model.generateContent(prompt);
         } catch (error) {
-            if (error.message.includes("503") || error.message.includes("429")) {
-                log(`[AI] ⚠️ Google API busy (Error ${error.message.includes("503") ? "503" : "429"}). Retrying ${attempt}/${maxRetries} in 3 seconds...`);
-                if (attempt === maxRetries) throw error;
-                await new Promise(r => setTimeout(r, 3000));
-                continue;
-            }
-            throw error;
+            const message = String(error && error.message ? error.message : error);
+            const status = error && (error.status || error.statusCode || error.code);
+            const retryable = [429, 500, 502, 503, 504].includes(Number(status)) ||
+                /\b(429|500|502|503|504)\b|timeout|temporar|ECONNRESET|ETIMEDOUT|fetch failed/i.test(message);
+
+            if (!retryable || attempt === maxRetries) throw error;
+
+            const delayMs = Math.min(1000 * (2 ** (attempt - 1)), 8000) + Math.floor(Math.random() * 250);
+            log(`[AI] ⚠️ Temporary API failure; retry ${attempt}/${maxRetries} in ${delayMs}ms.`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
         }
     }
+    throw new Error("Gemini request failed after retries.");
 }
 
 function mergeAndCleanTargets(oldStr, newStr) {
@@ -101,37 +108,65 @@ function extractTargets(text) {
     return mergeAndCleanTargets("", found.join(", "));
 }
 
-function extractTime(text) {
-    const now = new Date();
+function extractTime(text, referenceTime = new Date()) {
+    const base = referenceTime instanceof Date
+        ? new Date(referenceTime.getTime())
+        : new Date(typeof referenceTime === "number" ? referenceTime : Date.now());
+
+    // Absolute HH:MM is kept as provided; do not reinterpret it relative to the current clock.
     const absMatch = text.match(/(?<!\d)([0-1]?[0-9]|2[0-3]):([0-5][0-9])(?!\d)/);
-    if (absMatch) return `${absMatch[1].padStart(2, '0')}:${absMatch[2]}`;
+    if (absMatch) return `${absMatch[1].padStart(2, "0")}:${absMatch[2]}`;
 
-    const relMatch = text.match(/(?:בעוד|עוד|בתוך|תוך|יגיעו ב|זמן הגעה)?\s*(?:כ-|-)?(\d+|עשר|חמש|חמישה|רבע|עשרים|חצי)\s*(דקות|שעה)/);
-    if (relMatch) {
-        let numStr = relMatch[1];
-        let unit = relMatch[2];
-        let mins = parseInt(numStr);
-        const numMap = {"עשר": 10, "חמש": 5, "חמישה": 5, "רבע": 15, "עשרים": 20, "חצי": 30};
-        if (isNaN(mins)) mins = numMap[numStr] || 0;
-        if (unit === "שעה" && numStr === "חצי") mins = 30;
-        else if (unit === "שעה" && numStr === "רבע") mins = 15;
-
-        if (mins > 0) {
-            now.setMinutes(now.getMinutes() + mins);
-            return now.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jerusalem' });
-        }
+    const standaloneHour = text.match(/(?:בעוד|עוד|בתוך|תוך)\s+(?:שעה|שעתיים)(?![\u0590-\u05FF])/);
+    if (standaloneHour) {
+        const mins = standaloneHour[0].includes("שעתיים") ? 120 : 60;
+        base.setMinutes(base.getMinutes() + mins);
+        return base.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jerusalem" });
     }
-    return "";
+
+    const relMatch = text.match(/(?:בעוד|עוד|בתוך|תוך|יגיעו ב|זמן הגעה)?\s*(?:כ-|-)?(\d+|אחת|אחד|שניים|שתיים|שלוש|שלושה|ארבע|ארבעה|חמש|חמישה|שש|שישה|שבע|שבעה|שמונה|תשע|עשר|עשרה|עשרים|רבע|חצי)\s*(דקות|דקה|שעה|שעות|שעתיים)(?![\u0590-\u05FF])/);
+    if (!relMatch) return "";
+
+    const numberMap = {
+        "אחת": 1, "אחד": 1, "שניים": 2, "שתיים": 2,
+        "שלוש": 3, "שלושה": 3, "ארבע": 4, "ארבעה": 4,
+        "חמש": 5, "חמישה": 5, "שש": 6, "שישה": 6,
+        "שבע": 7, "שבעה": 7, "שמונה": 8, "תשע": 9,
+        "עשר": 10, "עשרה": 10, "עשרים": 20,
+        "רבע": 15, "חצי": 30,
+    };
+    const numStr = relMatch[1];
+    const unit = relMatch[2];
+    const amount = Number.isFinite(Number(numStr)) ? Number(numStr) : numberMap[numStr];
+    if (!amount || amount <= 0) return "";
+
+    let mins;
+    if (unit === "שעתיים") mins = 120;
+    else if (unit === "שעה" && numStr === "חצי") mins = 30;
+    else if (unit === "שעה" && numStr === "רבע") mins = 15;
+    else if (unit === "שעה" || unit === "שעות") mins = amount * 60;
+    else mins = amount;
+
+    base.setMinutes(base.getMinutes() + mins);
+    return base.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jerusalem" });
 }
 
-async function classifyMessage(channelId, messageText, lastPublished) {
+async function classifyMessage(channelId, messageText, lastPublished, messageTimestamp = null) {
     if (STRICT_BLACKLIST.some(word => messageText.includes(word))) {
         return { category: "IRRELEVANT", reasoning: "Blocked by deterministic blacklist.", event_key: "", source: "", target: "", estimated_time: "" };
     }
 
     const source = extractSource(messageText);
     const target = extractTargets(messageText);
-    const estimatedTime = extractTime(messageText);
+    let messageDate = new Date();
+    if (messageTimestamp instanceof Date) messageDate = messageTimestamp;
+    else if (messageTimestamp !== null && messageTimestamp !== undefined) {
+        const timestampNumber = Number(messageTimestamp);
+        if (Number.isFinite(timestampNumber)) {
+            messageDate = new Date(timestampNumber < 1e12 ? timestampNumber * 1000 : timestampNumber);
+        }
+    }
+    const estimatedTime = extractTime(messageText, messageDate);
 
     const prompt = `
     Analyze this Telegram message in Hebrew:
@@ -150,20 +185,32 @@ async function classifyMessage(channelId, messageText, lastPublished) {
       "reasoning": "One short sentence in English explaining why."
     }`;
 
-    let aiCategory = "IRRELEVANT";
-    let aiReasoning = "Fell through";
+    let aiCategory;
+    let aiReasoning;
 
     try {
         const result = await callAIWithRetry(prompt);
-        const text = result.response.text();
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
-            aiCategory = parsed.category;
-            aiReasoning = parsed.reasoning;
+        const responseText = result && result.response && result.response.text();
+        const jsonMatch = typeof responseText === "string" ? responseText.match(/\{[\s\S]*\}/) : null;
+        if (!jsonMatch) throw new Error("Gemini returned no valid JSON object.");
+
+        const parsed = JSON.parse(jsonMatch[0]);
+        const allowedCategories = new Set(["LAUNCH_REPORT", "UPDATE_TO_LAST", "IRRELEVANT"]);
+        if (!parsed || !allowedCategories.has(parsed.category) || typeof parsed.reasoning !== "string") {
+            throw new Error("Gemini response did not match the expected classification schema.");
         }
+        aiCategory = parsed.category;
+        aiReasoning = parsed.reasoning;
     } catch (err) {
-        log("[AI] classifyMessage critical error: " + err.message);
+        const message = String(err && err.message ? err.message : err);
+        log("[AI] Classification unavailable; message must be retried: " + message);
+        return {
+            category: "PROCESSING_ERROR",
+            reasoning: "AI classification failed; not treating the message as irrelevant.",
+            error: message,
+            retryable: true,
+            event_key: "", source: "", target: "", estimated_time: ""
+        };
     }
 
     const hasLaunchWord = LAUNCH_WHITELIST.some(word => messageText.includes(word));
@@ -224,25 +271,36 @@ async function classifyMessage(channelId, messageText, lastPublished) {
 }
 
 async function checkForNewInfo(newMessages, lastPublished) {
-    if (!lastPublished) return { has_new_info: false };
+    if (!lastPublished) return { has_new_info: false, reasoning: "No previous publication." };
 
-    const combinedText = newMessages.map(m => m.text).join(" | ");
-    
-    if (STRICT_BLACKLIST.some(word => combinedText.includes(word))) {
-        return { has_new_info: false, reasoning: "Blocked by deterministic blacklist." };
+    // Filter per message, rather than allowing one unrelated/blocked message to veto the whole event.
+    const usableMessages = (newMessages || []).filter(m =>
+        m && typeof m.text === "string" &&
+        !STRICT_BLACKLIST.some(word => m.text.includes(word))
+    );
+    if (usableMessages.length === 0) {
+        return { has_new_info: false, reasoning: "No usable messages in event." };
     }
 
+    const combinedText = usableMessages.map(m => m.text).join(" | ");
     const target = extractTargets(combinedText);
-    const estimatedTime = extractTime(combinedText);
     const source = extractSource(combinedText);
 
+    // Relative time expressions are resolved from the original message timestamp and never recalculated
+    // from the time at which this function happens to run.
+    let estimatedTime = "";
+    for (const message of usableMessages) {
+        const parsedTime = extractTime(message.text, message.time || Date.now());
+        if (parsedTime) estimatedTime = parsedTime;
+    }
+
     if (source && lastPublished.source && source !== lastPublished.source) {
-        return { 
-            has_new_info: true, 
-            source: source, 
-            target: target, 
-            estimated_time: estimatedTime, 
-            reasoning: "Different source, cross-event. Treating as new alert." 
+        return {
+            has_new_info: true,
+            source,
+            target,
+            estimated_time: estimatedTime,
+            reasoning: "Different source, cross-event. Treating as new alert."
         };
     }
 
@@ -251,7 +309,7 @@ async function checkForNewInfo(newMessages, lastPublished) {
     let finalTime = lastPublished.estimated_time || "";
     let finalSource = lastPublished.source || "";
 
-    let mergedTargets = mergeAndCleanTargets(finalTarget, target);
+    const mergedTargets = mergeAndCleanTargets(finalTarget, target);
     if (target && mergedTargets !== finalTarget) {
         hasNew = true;
         finalTarget = mergedTargets;

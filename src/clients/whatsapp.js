@@ -1,27 +1,31 @@
 /**
  * WhatsApp Client Module
  */
-
 const { Client, LocalAuth } = require("whatsapp-web.js");
+const fs = require("fs");
+const path = require("path");
 const { log } = require("../utils/logger");
-const { TARGET_WHATSAPP_GROUP } = require("../config");
+const { TARGET_WHATSAPP_GROUP, WHATSAPP_INVITE_LINK } = require("../config");
 const { onReady } = require("./handlers/ready");
 
 let whatsappGroupChat = null;
 let whatsappClient    = null;
+let isReconnecting    = false;
 
 function initializeWhatsApp(callbacks) {
+    if (isReconnecting) return;
     log("[System] Initializing WhatsApp Client...");
+
     whatsappClient = new Client({
         authStrategy: new LocalAuth({ dataPath: "./.wwebjs_auth" }),
         puppeteer: {
             headless: true,
             args: [
-                "--no-sandbox", 
-                "--disable-setuid-sandbox", 
-                "--disable-dev-shm-usage", 
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--disable-site-isolation-trials", 
+                "--disable-site-isolation-trials",
                 "--disable-features=IsolateOrigins"
             ],
         }
@@ -33,69 +37,97 @@ function initializeWhatsApp(callbacks) {
     });
 
     whatsappClient.on("ready", async () => {
-        log("[WhatsApp] ✅ Connected and ready!");
+        isReconnecting = false;
+        log("[WhatsApp]   Connected and ready!");
         try {
             const chats = await whatsappClient.getChats();
-            whatsappGroupChat = chats.find(c => c.isGroup && c.name.includes(TARGET_WHATSAPP_GROUP));
+            whatsappGroupChat = chats.find(c => c.isGroup && c.name === TARGET_WHATSAPP_GROUP);
+
             if (!whatsappGroupChat) {
-                log(`[WhatsApp] ❌ Target group not found: ${TARGET_WHATSAPP_GROUP}`);
+                log(`[WhatsApp]   Target group not found: ${TARGET_WHATSAPP_GROUP}`);
                 return;
             }
-            log(`[WhatsApp] ✅ Target group located: ${whatsappGroupChat.name}`);
+            log(`[WhatsApp]   Target group located: ${whatsappGroupChat.name}`);
             await onReady(callbacks);
         } catch (err) {
-            log("[WhatsApp] ❌ Error fetching chats: " + err);
+            log("[WhatsApp]   Error fetching chats: " + err);
         }
+    });
+
+    whatsappClient.on("disconnected", async (reason) => {
+        log(`[WhatsApp] ⚠️ Disconnected: ${reason}`);
+        whatsappGroupChat = null;
+
+        try {
+            await whatsappClient.destroy();
+        } catch (err) {
+            log("[WhatsApp] Error during destroy: " + err.message);
+        }
+
+        // מחיקת קבצי הסשן במקרה של ניתוק/יציאה מהחשבון כדי למנוע קריסה בהתחברות הבאה
+        if (reason === "LOGOUT") {
+            log("[WhatsApp] Cleaning auth session due to LOGOUT...");
+            const authPath = path.join(process.cwd(), ".wwebjs_auth");
+            if (fs.existsSync(authPath)) {
+                fs.rmSync(authPath, { recursive: true, force: true });
+            }
+        }
+
+        log("[WhatsApp] Reconnecting in 5 seconds...");
+        setTimeout(() => {
+            isReconnecting = false;
+            initializeWhatsApp(callbacks);
+        }, 5000);
     });
 
     whatsappClient.initialize();
 }
 
-/**
- * שליחת התרעה חדשה
- */
 async function sendAlert(source, target, estimated_time) {
+    if (!whatsappGroupChat) {
+        log("[WhatsApp] Cannot send alert - group not connected.");
+        return null;
+    }
+
     const alertMsg =
-        `🚨 *התרעה - שיגורים בדרכם!* 🚨\n\n` +
-        `📍 *מקור:* ${source          || "לא ידוע"}\n` +
-        `🎯 *יעד:* ${target            || "לא ידוע"}\n` +
-        `⏱️ *זמן משוער:* ${estimated_time || "לא ידוע"}\n\n` +
-        `⏱️ *להצטרפות להתרעות לפני פיקוד העורף:* https://chat.whatsapp.com/GuyC5q1jjOc3cKTJj3gYn6?mode=gi_t`;
+        `🚨 *צבע אדום* 🚨\n\n` +
+        `זירה: ${source          || "לא ידוע"}\n` +
+        `מרחב: ${target            || "לא ידוע"}\n` +
+        `זמן: ${estimated_time || "מיידי"}\n\n` +
+        `הצטרפו: ${WHATSAPP_INVITE_LINK}`;
 
     try {
         await whatsappGroupChat.sendMessage(alertMsg);
-        log("[WhatsApp] 📤 Alert sent!");
+        log("[WhatsApp]   Alert sent successfully!");
         return { source, target, estimated_time, publishedAt: Date.now() };
     } catch (err) {
-        log("[WhatsApp] ❌ Failed to send: " + err);
+        log("[WhatsApp]   Failed to send alert: " + err);
         return null;
     }
 }
 
-/**
- * שליחת עדכון לאירוע קיים
- * 
- * @param {object} updatedFields - השדות המעודכנים { source, target, estimated_time }
- * @param {object} prevPublished - מה היה לפני
- * @param {string} updateType    - "target" | "time" | "target+time"
- */
 async function sendUpdate(updatedFields, prevPublished, updateType) {
+    if (!whatsappGroupChat) {
+        log("[WhatsApp] Cannot send update - group not connected.");
+        return null;
+    }
+
     const updateLabel = {
-        "target":      "אזור יעד",
-        "time":        "זמן הגעה",
-        "target+time": "אזור יעד וזמן הגעה",
-    }[updateType] || "פרטים";
+        "target":      "עדכון אזורים",
+        "time":        "עדכון זמן",
+        "target+time": "עדכון פרטים"
+    }[updateType] || "עדכון";
 
     const alertMsg =
-        `🔄 *התרעה - עדכון ${updateLabel}* 🔄\n\n` +
-        `📍 *מקור:* ${updatedFields.source          || prevPublished.source || "לא ידוע"}\n` +
-        `🎯 *יעד:* ${updatedFields.target            || prevPublished.target || "לא ידוע"}\n` +
-        `⏱️ *זמן משוער:* ${updatedFields.estimated_time || prevPublished.estimated_time || "לא ידוע"}\n\n` +
-        `⏱️ *להצטרפות להתרעות לפני פיקוד העורף:* https://chat.whatsapp.com/GuyC5q1jjOc3cKTJj3gYn6?mode=gi_t`;
+        `🔄 *${updateLabel}* 🔄\n\n` +
+        `זירה: ${updatedFields.source          || prevPublished.source || "לא ידוע"}\n` +
+        `מרחב: ${updatedFields.target            || prevPublished.target || "לא ידוע"}\n` +
+        `זמן: ${updatedFields.estimated_time || prevPublished.estimated_time || "מיידי"}\n\n` +
+        `הצטרפו: ${WHATSAPP_INVITE_LINK}`;
 
     try {
         await whatsappGroupChat.sendMessage(alertMsg);
-        log("[WhatsApp] 📤 Update sent!");
+        log("[WhatsApp]   Update sent successfully!");
         return {
             source:         updatedFields.source          || prevPublished.source,
             target:         updatedFields.target          || prevPublished.target,
@@ -103,13 +135,19 @@ async function sendUpdate(updatedFields, prevPublished, updateType) {
             publishedAt:    Date.now(),
         };
     } catch (err) {
-        log("[WhatsApp] ❌ Failed to send update: " + err);
+        log("[WhatsApp]   Failed to send update: " + err);
         return null;
     }
 }
 
 async function shutdownWhatsApp() {
-    if (whatsappClient) await whatsappClient.destroy();
+    if (whatsappClient) {
+        try {
+            await whatsappClient.destroy();
+        } catch (err) {
+            log("[WhatsApp] Error shutting down: " + err.message);
+        }
+    }
 }
 
 module.exports = { initializeWhatsApp, sendAlert, sendUpdate, shutdownWhatsApp };

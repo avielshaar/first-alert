@@ -1,0 +1,17 @@
+# Never copy credentials, live sessions, or runtime state into the image.
+.env
+.env.*
+!.env.example
+.telegram_session
+.telegram_cursors.json
+.telegram_cursors.json.tmp
+.first-alert-state.json
+.first-alert-state.json.tmp
+.wwebjs_auth/
+.wwebjs_cache/
+data/
+node_modules/
+.git/
+.github/
+*.log
+.DS_Store
