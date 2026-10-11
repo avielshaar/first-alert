@@ -29,6 +29,12 @@ jobs:
       - name: Install dependencies from lockfile
         run: npm ci
 
+      - name: Report dependency vulnerability summary
+        continue-on-error: true
+        run: |
+          npm audit --json > "$RUNNER_TEMP/npm-audit.json" || true
+          node -e 'const r=require(process.env.RUNNER_TEMP + "/npm-audit.json"); const v=Object.entries(r.vulnerabilities||{}).map(([name,x])=>({name,severity:x.severity,isDirect:x.isDirect,range:x.range,fixAvailable:x.fixAvailable})); console.log(JSON.stringify({metadata:r.metadata?.vulnerabilities,vulnerabilities:v},null,2));'
+
       - name: Run Jest tests
         run: npm test
 

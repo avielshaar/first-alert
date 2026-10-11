@@ -15,7 +15,8 @@ This file describes the implementation in this repository; it is not an archive 
 9. **Reconnection management:** WhatsApp initialization failures are handled, overlapping initialization attempts are blocked, stale client events are ignored, and shutdown cancels scheduled reconnects.
 10. **Configuration and secrets:** Startup validates required values before creating messaging clients; .env, .env.* except .env.example, sessions, runtime data, and logs are ignored by Git.
 11. **Dependency patching:** patches/whatsapp-web.js+1.34.7.patch is applied by patch-package during install. The Docker build applies it while development dependencies are present and prunes them only afterward.
-12. **CI:** The beta branch runs a clean install, Jest tests, and Docker image build.
+12. **Maintained Gemini SDK:** The classifier uses Google's supported @google/genai SDK instead of the deprecated, unmaintained @google/generative-ai package.
+13. **CI:** The beta branch runs a clean install, Jest tests, and Docker image build.
 
 ## Validate before deployment
 
