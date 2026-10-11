@@ -50,27 +50,71 @@ function loadProcessorState() {
     try {
         if (!fs.existsSync(stateFile)) return;
         const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-        if (!parsed || parsed.version !== 1 || typeof parsed.activeEvents !== "object") {
+        if (
+            !parsed ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed) ||
+            parsed.version !== 1 ||
+            !parsed.activeEvents ||
+            typeof parsed.activeEvents !== "object" ||
+            Array.isArray(parsed.activeEvents)
+        ) {
             throw new Error("unsupported or malformed processor state file");
         }
+        if (!Number.isSafeInteger(parsed.nextEventId) || parsed.nextEventId < 1) {
+            throw new Error("invalid nextEventId in processor state file");
+        }
+        if (parsed.lastPublished !== null && parsed.lastPublished !== undefined &&
+            (typeof parsed.lastPublished !== "object" || Array.isArray(parsed.lastPublished))) {
+            throw new Error("invalid lastPublished value in processor state file");
+        }
+
         const loadedEvents = {};
+        let highestEventNumber = 0;
         for (const [id, raw] of Object.entries(parsed.activeEvents)) {
-            if (!raw || !["LAUNCH_REPORT", "UPDATE_TO_LAST"].includes(raw.kind)) continue;
+            const keyMatch = /^event-(\\d+)$/.exec(id);
+            if (!keyMatch || !raw || typeof raw !== "object" || Array.isArray(raw)) {
+                throw new Error("invalid pending event entry: " + id);
+            }
+            if (!["LAUNCH_REPORT", "UPDATE_TO_LAST"].includes(raw.kind)) {
+                throw new Error("invalid pending event kind for " + id);
+            }
+            if (raw.id !== id) {
+                throw new Error("pending event ID does not match its state key: " + id);
+            }
+            if (!Array.isArray(raw.channels) || !Array.isArray(raw.messages) ||
+                !Array.isArray(raw.messageKeys)) {
+                throw new Error("invalid pending event collections for " + id);
+            }
+            if (!Number.isFinite(raw.firstSeen) || !Number.isFinite(raw.lastSeen) ||
+                typeof raw.source !== "string" || typeof raw.target !== "string" ||
+                typeof raw.estimated_time !== "string") {
+                throw new Error("invalid pending event fields for " + id);
+            }
+
+            highestEventNumber = Math.max(highestEventNumber, Number(keyMatch[1]));
             loadedEvents[id] = {
                 ...raw,
-                channels: new Set(Array.isArray(raw.channels) ? raw.channels.map(String) : []),
-                messages: Array.isArray(raw.messages) ? raw.messages : [],
-                messageKeys: new Set(Array.isArray(raw.messageKeys) ? raw.messageKeys : []),
+                channels: new Set(raw.channels.map(String)),
+                messages: raw.messages,
+                messageKeys: new Set(raw.messageKeys),
             };
         }
+        if (parsed.nextEventId <= highestEventNumber) {
+            throw new Error("nextEventId would collide with a pending event");
+        }
+
         Object.assign(activeEvents, loadedEvents);
         lastPublished = parsed.lastPublished || null;
-        nextEventId = Number.isSafeInteger(parsed.nextEventId) && parsed.nextEventId > 0
-            ? parsed.nextEventId
-            : 1;
+        nextEventId = parsed.nextEventId;
         log(`[State] Restored ${Object.keys(activeEvents).length} pending event(s) from disk.`);
     } catch (error) {
         log(`[State] Could not load processor state from ${stateFile}: ${error.message || error}`);
+        throw new Error(
+            "Processor state is invalid or unreadable. Refusing to start to avoid losing pending incident evidence. " +
+            "Back up and repair the state file at " + stateFile + ", then restart.",
+            { cause: error }
+        );
     }
 }
 
