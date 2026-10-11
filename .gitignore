@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 .telegram_session
 .telegram_cursors.json
 .telegram_cursors.json.tmp

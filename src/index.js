@@ -1,4 +1,13 @@
 const { log } = require("./utils/logger");
+const { validateConfig } = require("./config");
+
+const configErrors = validateConfig();
+if (configErrors.length > 0) {
+    log("[Config] Startup aborted because configuration is incomplete or invalid:");
+    for (const error of configErrors) log("[Config] " + error);
+    process.exit(1);
+}
+
 const { initializeWhatsApp, sendAlert, sendUpdate, shutdownWhatsApp } = require("./clients/whatsapp");
 const { shutdownTelegram } = require("./clients/telegram");
 const { setLastPublished } = require("./messaging/processor");
