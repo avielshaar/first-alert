@@ -61,7 +61,9 @@ describe("critical processor regressions", () => {
         const retry = await processMessage("channel-2", "report-2", callbacks, 202, 1767254400);
         expect(retry).toBe(true);
         expect(callbacks.alert).toHaveBeenCalledTimes(2);
-        expect(Object.keys(getActiveEvents())).toHaveLength(0);
+        const retained = Object.values(getActiveEvents());
+        expect(retained).toHaveLength(1);
+        expect(retained[0].corroborationPending).toBe(true);
     });
 
     test("messages from one channel cannot satisfy cross-channel corroboration", async () => {
@@ -108,7 +110,9 @@ describe("critical processor regressions", () => {
 
         expect(retry).toBe(true);
         expect(callbacks.update).toHaveBeenCalledTimes(2);
-        expect(Object.keys(getActiveEvents())).toHaveLength(0);
+        const retained = Object.values(getActiveEvents());
+        expect(retained).toHaveLength(1);
+        expect(retained[0].corroborationPending).toBe(true);
     });
 
     test("a processing error is not acknowledged as an irrelevant message", async () => {

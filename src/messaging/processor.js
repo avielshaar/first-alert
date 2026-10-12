@@ -516,15 +516,15 @@ async function publishNewAlert(event, callbacks, verifiedFields) {
     }
 
     const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+    // Keep a two-minute evidence window even after an alert is sent. This lets a third
+    // independent channel refine the ETA (median/range) and helps verify any field omitted
+    // from the first publication without delaying the initial two-channel alert.
+    event.kind = "UPDATE_TO_LAST";
+    event.corroborationPending = true;
     if (pendingFields.length > 0) {
-        // Keep a short-lived evidence window so another channel can verify fields omitted
-        // from the first message or add another independent ETA estimate.
-        event.kind = "UPDATE_TO_LAST";
-        event.corroborationPending = true;
         log(`[Verification] ${event.id} sent verified fields only; waiting for: ${pendingFields.join(", ")}.`);
-        return persistProcessorState();
     }
-    return removeEvent(event.id);
+    return persistProcessorState();
 }
 
 async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(event)) {
@@ -540,9 +540,13 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
 
     if (!hasNewSource && !hasNewTarget && !hasNewTime) {
         const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
-        if (pendingFields.length > 0) {
+        if (pendingFields.length > 0 || event.corroborationPending) {
             event.corroborationPending = true;
-            log(`[Verification] ${event.id} waiting for independent confirmation of: ${pendingFields.join(", ")}.`);
+            if (pendingFields.length > 0) {
+                log(`[Verification] ${event.id} waiting for independent confirmation of: ${pendingFields.join(", ")}.`);
+            } else {
+                log(`[Events] Keeping ${event.id} open briefly to collect additional channel evidence.`);
+            }
             return persistProcessorState();
         }
         const removed = removeEvent(event.id);
@@ -571,12 +575,13 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
     }
 
     const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+    event.corroborationPending = true;
     if (pendingFields.length > 0) {
-        event.corroborationPending = true;
         log(`[Verification] ${event.id} update sent using corroborated fields only; still waiting for: ${pendingFields.join(", ")}.`);
-        return persistProcessorState();
+    } else {
+        log(`[Events] Keeping ${event.id} open briefly for additional ETA/evidence reports.`);
     }
-    return removeEvent(event.id);
+    return persistProcessorState();
 }
 
 async function processMessage(channelId, messageText, callbacks, messageId = null, messageTimestamp = null) {

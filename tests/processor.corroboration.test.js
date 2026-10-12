@@ -140,6 +140,27 @@ describe("field-level cross-channel corroboration", () => {
         expect(getCorroboratedTime(event)).toBe("10:05–10:20 (חציון 10:06)");
     });
 
+    test("a third channel can refine the ETA within the short evidence window", async () => {
+        setLastPublished("איראן", "דרום", "10:00");
+        classifyMessage
+            .mockResolvedValueOnce(classification({
+                category: "UPDATE_TO_LAST", source: "איראן", target: "דרום", time: "10:05",
+            }))
+            .mockResolvedValueOnce(classification({
+                category: "UPDATE_TO_LAST", source: "איראן", target: "דרום", time: "10:06",
+            }))
+            .mockResolvedValueOnce(classification({
+                category: "UPDATE_TO_LAST", source: "איראן", target: "דרום", time: "10:20",
+            }));
+
+        await processMessage("channel-1", "ETA 10:05", callbacks, 111, 1767254400);
+        await processMessage("channel-2", "ETA 10:06", callbacks, 222, 1767254401);
+        await processMessage("channel-3", "ETA 10:20", callbacks, 333, 1767254402);
+
+        expect(callbacks.update).toHaveBeenCalledTimes(2);
+        expect(callbacks.update.mock.calls[1][0].estimated_time).toBe("10:05–10:20 (חציון 10:06)");
+    });
+
     test("treats estimates around midnight as close when their gap is three minutes", () => {
         const event = {
             messages: [
