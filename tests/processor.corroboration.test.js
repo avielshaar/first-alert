@@ -90,6 +90,23 @@ describe("field-level cross-channel corroboration", () => {
         expect(callbacks.alert).toHaveBeenCalledWith("", "דרום", "");
     });
 
+    test("does not pass a legacy unverified baseline into the classifier", async () => {
+        setLastPublished("איראן", "דרום", "10:00");
+        delete require("../src/messaging/processor").getLastPublished().verificationVersion;
+        classifyMessage.mockResolvedValueOnce(classification({
+            category: "LAUNCH_REPORT", source: "איראן", target: "דרום",
+        }));
+
+        await processMessage("channel-1", "report after upgrade", callbacks, 111, 1767254400);
+
+        expect(classifyMessage).toHaveBeenCalledWith(
+            "channel-1",
+            "report after upgrade",
+            null,
+            1767254400
+        );
+    });
+
     test("averages two corroborated estimates when their spread is at most three minutes", async () => {
         setLastPublished("איראן", "דרום", "10:00");
         classifyMessage

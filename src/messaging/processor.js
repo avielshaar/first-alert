@@ -132,6 +132,8 @@ function setLastPublished(source, target, estimated_time) {
             source: source || "",
             target: target || "",
             estimated_time: estimated_time || "",
+            // Only values created by the field-verified flow are trusted as corroborated baselines.
+            verificationVersion: 1,
             publishedAt: Date.now(),
         };
     }
@@ -144,6 +146,12 @@ function setLastPublished(source, target, estimated_time) {
 
 function getLastPublished() { return lastPublished; }
 function getActiveEvents() { return activeEvents; }
+
+// Older persisted baselines were created before per-field confirmation existed. Do not reuse
+// their source, target, or time as verified facts; a new event must reconfirm those fields.
+function getVerifiedLastPublished() {
+    return lastPublished && lastPublished.verificationVersion === 1 ? lastPublished : null;
+}
 
 // Expire the publication baseline, not the two-minute event-correlation window.
 // A missing/invalid timestamp is treated as stale so legacy/corrupt state cannot suppress alerts forever.
@@ -589,9 +597,10 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     expireStaleLastPublished(now);
     if (!cleanupExpiredEvents(now)) return false;
 
+    const publishedBaseline = getVerifiedLastPublished();
     let classification;
     try {
-        classification = await classifyMessage(channelId, messageText, lastPublished, messageTimestamp);
+        classification = await classifyMessage(channelId, messageText, publishedBaseline, messageTimestamp);
     } catch (error) {
         log(`[Processor] Classification threw; message will be retried: ${error.message || error}`);
         return false;
@@ -613,7 +622,7 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
 
     // Updates must also be corroborated by multiple configured channels. One channel cannot
     // bypass the confirmation rule and publish an unverified change immediately.
-    if (classification.category === "UPDATE_TO_LAST" && !lastPublished) return true;
+    if (classification.category === "UPDATE_TO_LAST" && !publishedBaseline) return true;
 
     const kind = classification.category;
     const event = findMatchingEvent(classification, kind) || createEvent(classification, kind, now);
@@ -627,7 +636,7 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
 
     const evidence = getCorroboratedFields(event);
 
-    if (!lastPublished) {
+    if (!publishedBaseline) {
         if (!evidence.target) {
             const pendingFields = getPendingUncorroboratedFields(event, null);
             log(`[Verification] ${event.id} waiting for 2-channel target confirmation before publishing` +
@@ -638,7 +647,7 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
         return publishNewAlert(event, callbacks, evidence);
     }
 
-    if (isDifferentIncident(evidence, lastPublished)) {
+    if (isDifferentIncident(evidence, publishedBaseline)) {
         if (!evidence.target) {
             const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
             log(`[Verification] ${event.id} appears different, but its target is not confirmed by two channels` +
