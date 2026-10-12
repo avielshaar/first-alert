@@ -254,7 +254,12 @@ async function classifyMessage(channelId, messageText, lastPublished, messageTim
                      source: source || lastPublished.source,
                      target: mergedTargets,
                      estimated_time: estimatedTime || lastPublished.estimated_time,
-                     event_key: `${source || lastPublished.source}->${mergedTargets}`
+                     // Keep facts found in this message separate from values inherited from
+                    // the previously published alert. Only raw fields count as new evidence.
+                    reportedSource: source,
+                    reportedTarget: target,
+                    reportedEstimatedTime: estimatedTime,
+                    event_key: `${source || lastPublished.source}->${mergedTargets}`
                  };
              } else if (target === lastPublished.target && (!estimatedTime || estimatedTime === lastPublished.estimated_time)) {
                  return { category: "IRRELEVANT", reasoning: "Duplicate update info.", event_key: "", source: "", target: "", estimated_time: "" };
@@ -270,6 +275,9 @@ async function classifyMessage(channelId, messageText, lastPublished, messageTim
                 source: source,
                 target: target,
                 estimated_time: estimatedTime,
+                reportedSource: source,
+                reportedTarget: target,
+                reportedEstimatedTime: estimatedTime,
                 event_key: `${source}->${target}`
             };
         }

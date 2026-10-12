@@ -8,7 +8,7 @@
  */
 
 const { log } = require("../utils/logger");
-const { classifyMessage, checkForNewInfo } = require("./classifier");
+const { classifyMessage, extractSource, extractTargets, extractTime } = require("./classifier");
 const {
     CONTEXT_WINDOW_MS,
     LAST_PUBLISHED_DEDUP_WINDOW_MS,
@@ -96,7 +96,8 @@ function loadProcessorState() {
             loadedEvents[id] = {
                 ...raw,
                 channels: new Set(raw.channels.map(String)),
-                messages: raw.messages,
+                // Older state files lack per-message evidence. Rebuild it from original text.
+                messages: raw.messages.map(message => hydrateMessageEvidence(message)),
                 messageKeys: new Set(raw.messageKeys),
             };
         }
@@ -265,6 +266,170 @@ function findMatchingEvent(classification, kind) {
     return null;
 }
 
+
+function safelyExtract(extractor, ...args) {
+    try {
+        return typeof extractor === "function" ? (extractor(...args) || "") : "";
+    } catch (_) {
+        return "";
+    }
+}
+
+function hydrateMessageEvidence(message) {
+    if (!message || typeof message !== "object" || Array.isArray(message)) return message;
+    const text = typeof message.text === "string" ? message.text : "";
+    const referenceTime = message.time || Date.now();
+    return {
+        ...message,
+        reportedSource: typeof message.reportedSource === "string"
+            ? message.reportedSource
+            : safelyExtract(extractSource, text),
+        reportedTarget: typeof message.reportedTarget === "string"
+            ? message.reportedTarget
+            : safelyExtract(extractTargets, text),
+        reportedEstimatedTime: typeof message.reportedEstimatedTime === "string"
+            ? message.reportedEstimatedTime
+            : safelyExtract(extractTime, text, referenceTime),
+    };
+}
+
+function getEvidenceMessages(event) {
+    return (Array.isArray(event.messages) ? event.messages : [])
+        .filter(message => message && typeof message === "object" && !Array.isArray(message));
+}
+
+function getSourceVoteMap(messages) {
+    const votes = new Map();
+    for (const message of messages) {
+        const source = String(message.reportedSource || "").trim();
+        const channel = String(message.channel || "");
+        if (!source || !channel) continue;
+        if (!votes.has(source)) votes.set(source, new Set());
+        votes.get(source).add(channel);
+    }
+    return votes;
+}
+
+function getTargetVoteMap(messages) {
+    const candidates = new Set();
+    for (const message of messages) {
+        for (const target of splitTargets(message.reportedTarget)) candidates.add(target);
+    }
+    const votes = new Map();
+    for (const candidate of candidates) {
+        const channels = new Set();
+        for (const message of messages) {
+            const channel = String(message.channel || "");
+            if (!channel) continue;
+            if (splitTargets(message.reportedTarget).some(target => targetsOverlap(candidate, target))) {
+                channels.add(channel);
+            }
+        }
+        votes.set(candidate, channels);
+    }
+    return votes;
+}
+
+function parseClockMinutes(value) {
+    const match = /^(?:([01]?\d|2[0-3])):([0-5]\d)$/.exec(String(value || "").trim());
+    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+}
+
+function formatClockMinutes(value) {
+    const minute = ((Math.round(value) % 1440) + 1440) % 1440;
+    return String(Math.floor(minute / 60)).padStart(2, "0") + ":" +
+        String(minute % 60).padStart(2, "0");
+}
+
+function getTimeEstimates(event) {
+    // Count one observation per channel; repeated posts are not independent votes.
+    const latestByChannel = new Map();
+    for (const message of getEvidenceMessages(event)) {
+        const value = String(message.reportedEstimatedTime || "").trim();
+        if (parseClockMinutes(value) === null) continue;
+        const channel = String(message.channel || "");
+        if (!channel) continue;
+        const timestamp = Number(message.time) || 0;
+        const current = latestByChannel.get(channel);
+        if (!current || timestamp >= current.timestamp) {
+            latestByChannel.set(channel, { channel, value, timestamp });
+        }
+    }
+    return [...latestByChannel.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function getCorroboratedTime(event) {
+    const estimates = getTimeEstimates(event);
+    if (estimates.length < 2) return "";
+
+    const anchor = parseClockMinutes(estimates[0].value);
+    // Unwrap values around midnight so 23:59 and 00:02 are treated as 3 minutes apart.
+    const minutes = estimates.map(estimate => {
+        let value = parseClockMinutes(estimate.value);
+        while (value - anchor > 720) value -= 1440;
+        while (value - anchor < -720) value += 1440;
+        return value;
+    }).sort((a, b) => a - b);
+
+    const spread = minutes[minutes.length - 1] - minutes[0];
+    const middle = Math.floor(minutes.length / 2);
+    const median = minutes.length % 2
+        ? minutes[middle]
+        : (minutes[middle - 1] + minutes[middle]) / 2;
+
+    if (spread <= 3) {
+        const estimate = minutes.length === 2
+            ? (minutes[0] + minutes[1]) / 2
+            : median;
+        return formatClockMinutes(estimate);
+    }
+
+    const range = formatClockMinutes(minutes[0]) + "–" +
+        formatClockMinutes(minutes[minutes.length - 1]);
+    return estimates.length >= 3
+        ? range + " (חציון " + formatClockMinutes(median) + ")"
+        : range;
+}
+
+function getCorroboratedFields(event) {
+    const messages = getEvidenceMessages(event);
+    const sourceVotes = getSourceVoteMap(messages);
+    const verifiedSources = [...sourceVotes.entries()].filter(([, channels]) => channels.size >= 2);
+    const source = verifiedSources.length === 1 ? verifiedSources[0][0] : "";
+
+    const targetVotes = getTargetVoteMap(messages);
+    const verifiedTargets = [...targetVotes.entries()]
+        .filter(([, channels]) => channels.size >= 2)
+        .map(([target]) => target);
+    const target = mergeTargets("", verifiedTargets.join(", "));
+
+    return { source, target, estimated_time: getCorroboratedTime(event) };
+}
+
+function getPendingUncorroboratedFields(event, published) {
+    const messages = getEvidenceMessages(event);
+    const pending = new Set();
+
+    for (const [source, channels] of getSourceVoteMap(messages)) {
+        if (channels.size === 1 && source !== String(published && published.source || "")) {
+            pending.add("source");
+        }
+    }
+
+    const publishedTargets = splitTargets(published && published.target);
+    for (const [target, channels] of getTargetVoteMap(messages)) {
+        const alreadyPublished = publishedTargets.some(existing => targetsOverlap(existing, target));
+        if (channels.size === 1 && !alreadyPublished) pending.add("target");
+    }
+
+    const estimates = getTimeEstimates(event);
+    if (estimates.length === 1 &&
+        estimates[0].value !== String(published && published.estimated_time || "")) {
+        pending.add("time");
+    }
+    return [...pending];
+}
+
 function createEvent(classification, kind, now) {
     const id = `event-${nextEventId++}`;
     activeEvents[id] = {
@@ -282,7 +447,7 @@ function createEvent(classification, kind, now) {
     return activeEvents[id];
 }
 
-function addMessageToEvent(event, channelId, messageText, messageId, messageTimestamp, now) {
+function addMessageToEvent(event, channelId, messageText, messageId, messageTimestamp, now, classification) {
     const messageKey = messageId !== undefined && messageId !== null
         ? `${channelId}:${messageId}`
         : `${channelId}:${messageText}`;
@@ -296,6 +461,16 @@ function addMessageToEvent(event, channelId, messageText, messageId, messageTime
         channel: String(channelId),
         messageId: messageId === undefined ? null : messageId,
         text: messageText,
+        // Store this message's evidence separately from merged or previously published values.
+        reportedSource: typeof classification.reportedSource === "string"
+            ? classification.reportedSource
+            : String(classification.source || ""),
+        reportedTarget: typeof classification.reportedTarget === "string"
+            ? classification.reportedTarget
+            : String(classification.target || ""),
+        reportedEstimatedTime: typeof classification.reportedEstimatedTime === "string"
+            ? classification.reportedEstimatedTime
+            : String(classification.estimated_time || ""),
         // Save the message's original time so relative expressions don't drift on retry.
         time: messageTimestamp ? normalizeTimestamp(messageTimestamp) : now,
     });
@@ -314,8 +489,12 @@ function mergeClassificationIntoEvent(event, classification) {
     if (classification.estimated_time) event.estimated_time = classification.estimated_time;
 }
 
-async function publishNewAlert(event, callbacks) {
-    const result = await callbacks.alert(event.source, event.target, event.estimated_time);
+async function publishNewAlert(event, callbacks, verifiedFields) {
+    const result = await callbacks.alert(
+        verifiedFields.source || "",
+        verifiedFields.target || "",
+        verifiedFields.estimated_time || ""
+    );
     if (!result) {
         // A failed external delivery is an outbox item, not a short-lived correlation event.
         // Keep it until delivery succeeds so an outage longer than CONTEXT_WINDOW_MS cannot
@@ -328,33 +507,51 @@ async function publishNewAlert(event, callbacks) {
         log(`[Dispatch] ❌ Alert delivery failed; retaining ${event.id} for retry.`);
         return false;
     }
+
+    const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+    if (pendingFields.length > 0) {
+        // Keep a short-lived evidence window so another channel can verify fields omitted
+        // from the first message or add another independent ETA estimate.
+        event.kind = "UPDATE_TO_LAST";
+        log(`[Verification] ${event.id} sent verified fields only; waiting for: ${pendingFields.join(", ")}.`);
+        return persistProcessorState();
+    }
     return removeEvent(event.id);
 }
 
-async function publishUpdate(event, callbacks) {
+async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(event)) {
     if (!lastPublished) return true;
 
-    const mergedTarget = mergeTargets(lastPublished.target, event.target);
+    const mergedTarget = mergeTargets(lastPublished.target, evidence.target);
     const finalTarget = mergedTarget || lastPublished.target || "";
-    const finalTime = event.estimated_time || lastPublished.estimated_time || "";
-    const finalSource = event.source || lastPublished.source || "";
+    const finalTime = evidence.estimated_time || lastPublished.estimated_time || "";
+    const finalSource = evidence.source || lastPublished.source || "";
+    const hasNewSource = Boolean(finalSource && finalSource !== (lastPublished.source || ""));
     const hasNewTarget = finalTarget !== (lastPublished.target || "");
     const hasNewTime = Boolean(finalTime && finalTime !== lastPublished.estimated_time);
 
-    if (!hasNewTarget && !hasNewTime) {
+    if (!hasNewSource && !hasNewTarget && !hasNewTime) {
+        const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+        if (pendingFields.length > 0) {
+            log(`[Verification] ${event.id} waiting for independent confirmation of: ${pendingFields.join(", ")}.`);
+            return true;
+        }
         const removed = removeEvent(event.id);
-        log(`[Dedup] No new actionable information in ${event.id}.`);
+        log(`[Dedup] No new corroborated information in ${event.id}.`);
         return removed;
     }
 
-    const updateType = hasNewTarget && hasNewTime ? "target+time" : hasNewTarget ? "target" : "time";
+    const updateType = [
+        hasNewSource && "source",
+        hasNewTarget && "target",
+        hasNewTime && "time",
+    ].filter(Boolean).join("+");
     const result = await callbacks.update(
         { source: finalSource, target: finalTarget, estimated_time: finalTime },
         lastPublished,
         updateType
     );
     if (!result) {
-        // Failed updates must survive the same context-window cleanup as failed new alerts.
         event.deliveryPending = true;
         const persisted = persistProcessorState();
         if (!persisted) {
@@ -364,6 +561,11 @@ async function publishUpdate(event, callbacks) {
         return false;
     }
 
+    const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+    if (pendingFields.length > 0) {
+        log(`[Verification] ${event.id} update sent using corroborated fields only; still waiting for: ${pendingFields.join(", ")}.`);
+        return persistProcessorState();
+    }
     return removeEvent(event.id);
 }
 
@@ -401,48 +603,39 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     const kind = classification.category;
     const event = findMatchingEvent(classification, kind) || createEvent(classification, kind, now);
     mergeClassificationIntoEvent(event, classification);
-    addMessageToEvent(event, channelId, messageText, messageId, messageTimestamp, now);
+    addMessageToEvent(event, channelId, messageText, messageId, messageTimestamp, now, classification);
     // Persist pending correlation state before the Telegram cursor is allowed to advance.
     if (!persistProcessorState()) return false;
 
     log(`[Events] ${event.id}: ${event.channels.size}/${MIN_CHANNELS_TO_ACT} channels confirmed.`);
     if (event.channels.size < MIN_CHANNELS_TO_ACT) return true;
 
-    if (kind === "UPDATE_TO_LAST") return publishUpdate(event, callbacks);
+    const evidence = getCorroboratedFields(event);
 
-    if (isDifferentIncident(event, lastPublished)) {
-        log(`[Publish] Corroborated new incident: ${event.source || "unknown source"} -> ${event.target || "unknown target"}`);
-        return publishNewAlert(event, callbacks);
+    if (!lastPublished) {
+        if (!evidence.target) {
+            const pendingFields = getPendingUncorroboratedFields(event, null);
+            log(`[Verification] ${event.id} waiting for 2-channel target confirmation before publishing` +
+                (pendingFields.length ? ` (pending: ${pendingFields.join(", ")}).` : "."));
+            return true;
+        }
+        log(`[Publish] Corroborated new incident: ${evidence.source || "unverified source"} -> ${evidence.target}`);
+        return publishNewAlert(event, callbacks, evidence);
     }
 
-    const newInfoCheck = await checkForNewInfo(event.messages, lastPublished);
-    if (!newInfoCheck.has_new_info) {
-        log(`[Dedup] ${newInfoCheck.reasoning}`);
-        return removeEvent(event.id);
+    if (isDifferentIncident(evidence, lastPublished)) {
+        if (!evidence.target) {
+            const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+            log(`[Verification] ${event.id} appears different, but its target is not confirmed by two channels` +
+                (pendingFields.length ? ` (pending: ${pendingFields.join(", ")}).` : "."));
+            return true;
+        }
+        log(`[Publish] Corroborated new incident: ${evidence.source || "unverified source"} -> ${evidence.target}`);
+        return publishNewAlert(event, callbacks, evidence);
     }
 
-    const finalTarget = mergeTargets(lastPublished.target, newInfoCheck.target);
-    const finalTime = newInfoCheck.estimated_time || lastPublished.estimated_time;
-    const finalSource = newInfoCheck.source || lastPublished.source;
-    const hasNewTarget = finalTarget !== (lastPublished.target || "");
-    const hasNewTime = Boolean(finalTime && finalTime !== lastPublished.estimated_time);
-
-    if (!hasNewTarget && !hasNewTime) {
-        return removeEvent(event.id);
-    }
-
-    const updateType = hasNewTarget && hasNewTime ? "target+time" : hasNewTarget ? "target" : "time";
-    const result = await callbacks.update(
-        { source: finalSource, target: finalTarget, estimated_time: finalTime },
-        lastPublished,
-        updateType
-    );
-    if (!result) {
-        log(`[Dispatch] ❌ Update delivery failed; retaining ${event.id} for retry.`);
-        return false;
-    }
-
-    return removeEvent(event.id);
+    // New alerts and tactical updates use the same per-field corroboration.
+    return publishUpdate(event, callbacks, evidence);
 }
 
 module.exports = {
@@ -454,4 +647,7 @@ module.exports = {
     expireStaleLastPublished,
     mergeTargets,
     targetsOverlap,
+    // Exported for deterministic field-verification tests.
+    getCorroboratedFields,
+    getCorroboratedTime,
 };

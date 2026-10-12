@@ -179,8 +179,8 @@ async function sendAlert(source, target, estimated_time) {
 
     const alertMsg =
         "🚨 *צבע אדום* 🚨\n\n" +
-        "זירה: " + (source || "לא ידוע") + "\n" +
-        "מרחב: " + (target || "לא ידוע") + "\n" +
+        "זירה: " + (source || "לא מאומת") + "\n" +
+        "מרחב: " + (target || "לא מאומת") + "\n" +
         "זמן: " + (estimated_time || "לא ידוע") + "\n\n" +
         "הצטרפו: " + WHATSAPP_INVITE_LINK;
 
@@ -201,15 +201,19 @@ async function sendUpdate(updatedFields, prevPublished, updateType) {
     }
 
     const updateLabel = {
+        source: "עדכון זירת השיגור",
         target: "עדכון אזורים",
         time: "עדכון זמן",
+        "source+target": "עדכון פרטים",
+        "source+time": "עדכון פרטים",
         "target+time": "עדכון פרטים",
+        "source+target+time": "עדכון פרטים",
     }[updateType] || "עדכון";
 
     const alertMsg =
         "🔄 *" + updateLabel + "* 🔄\n\n" +
-        "זירה: " + (updatedFields.source || prevPublished.source || "לא ידוע") + "\n" +
-        "מרחב: " + (updatedFields.target || prevPublished.target || "לא ידוע") + "\n" +
+        "זירה: " + (updatedFields.source || prevPublished.source || "לא מאומת") + "\n" +
+        "מרחב: " + (updatedFields.target || prevPublished.target || "לא מאומת") + "\n" +
         "זמן: " + (updatedFields.estimated_time || prevPublished.estimated_time || "לא ידוע") + "\n\n" +
         "הצטרפו: " + WHATSAPP_INVITE_LINK;
 

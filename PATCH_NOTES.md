@@ -7,7 +7,7 @@ This file describes the implementation in this repository; it is not an archive 
 1. **Classification failures:** Gemini transport errors and malformed model responses become retryable processing errors, not irrelevant messages. The Telegram cursor is not advanced on those failures.
 2. **Prompt boundary:** Telegram text is JSON-encoded and explicitly designated as untrusted input in the classifier prompt.
 3. **Ordered Telegram ingestion:** The poller iterates messages chronologically from the persisted per-channel cursor and commits the cursor only after processing succeeds.
-4. **Cross-source confirmation:** New incidents and updates require confirmation from the configured number of distinct channels. Repeated messages from one channel do not satisfy that rule.
+4. **Cross-source confirmation:** New incidents and updates require confirmation from distinct Telegram channels. Each source country and target area is verified independently; a field reported by only one channel is omitted or labeled unverified rather than treated as fact.
 5. **Delivery retries:** Failed WhatsApp sends preserve the event and keep the cursor pending. Such delivery-pending events are not deleted by the ordinary two-minute correlation cleanup, so a longer WhatsApp outage does not silently discard them.
 6. **State safety:** Processor state and Telegram cursors are written atomically. Corrupt Telegram cursor state or malformed pending-event state fails closed rather than silently resetting state, skipping messages, or losing cross-channel evidence. Restored event IDs are checked for collisions.
 7. **Persistent sessions:** Telegram and WhatsApp session data default to ./data; WhatsApp's legacy ./.wwebjs_auth directory is migrated when the configured persistent destination does not already exist. In Docker, mount /app/data.
@@ -17,6 +17,7 @@ This file describes the implementation in this repository; it is not an archive 
 11. **Dependency patching:** patches/whatsapp-web.js+1.34.7.patch is applied by patch-package during install. The Docker build applies it while development dependencies are present and prunes them only afterward.
 12. **Maintained Gemini SDK:** The classifier uses Google's supported @google/genai SDK instead of the deprecated, unmaintained @google/generative-ai package.
 13. **CI:** The beta branch runs a clean install, a JavaScript syntax check, Jest tests, and Docker image build. It also reports full and production dependency audit results; audit reporting is currently non-blocking because the existing WhatsApp/Puppeteer dependency chain has upstream advisories that need a separate compatibility-tested migration.
+14. **Field-level verification and ETA reconciliation:** A source country or target area is accepted only with support from distinct channels. ETA estimates with a spread of 3 minutes or less are combined using the midpoint for two estimates or the median for 3+ estimates. Larger disagreements are shown as a range (plus a median with 3+ estimates). If a field is not corroborated, WhatsApp labels it "לא מאומת" and the event remains eligible for further corroboration within the short context window.
 
 ## Open security finding — not cleared
 
