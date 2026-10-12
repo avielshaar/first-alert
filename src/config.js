@@ -52,7 +52,7 @@ const LAST_PUBLISHED_DEDUP_WINDOW_MINUTES =
     parsedDedupMinutes >= 0 &&
     Number.isFinite(parsedDedupMinutes * 60 * 1000)
         ? parsedDedupMinutes
-        : 15;
+        : 10;
 const LAST_PUBLISHED_DEDUP_WINDOW_MS = LAST_PUBLISHED_DEDUP_WINDOW_MINUTES * 60 * 1000;
 
 // Minimum number of channels required to confirm and publish an alert
