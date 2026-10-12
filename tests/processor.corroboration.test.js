@@ -18,6 +18,7 @@ const {
     processMessage,
     setLastPublished,
     getActiveEvents,
+    getCorroboratedTime,
 } = require("../src/messaging/processor");
 
 const callbacks = {
@@ -126,6 +127,27 @@ describe("field-level cross-channel corroboration", () => {
 
         expect(callbacks.update).toHaveBeenCalledTimes(1);
         expect(callbacks.update.mock.calls[0][0].estimated_time).toBe("10:05–10:10");
+    });
+
+    test("uses a median and retains the range when 3+ channel estimates disagree", () => {
+        const event = {
+            messages: [
+                { channel: "channel-1", reportedEstimatedTime: "10:05", time: 1 },
+                { channel: "channel-2", reportedEstimatedTime: "10:06", time: 2 },
+                { channel: "channel-3", reportedEstimatedTime: "10:20", time: 3 },
+            ],
+        };
+        expect(getCorroboratedTime(event)).toBe("10:05–10:20 (חציון 10:06)");
+    });
+
+    test("treats estimates around midnight as close when their gap is three minutes", () => {
+        const event = {
+            messages: [
+                { channel: "channel-1", reportedEstimatedTime: "23:59", time: 1 },
+                { channel: "channel-2", reportedEstimatedTime: "00:02", time: 2 },
+            ],
+        };
+        expect(getCorroboratedTime(event)).toBe("00:01");
     });
 
     test("does not add a new target area until two channels support that area", async () => {

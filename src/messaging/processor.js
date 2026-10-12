@@ -234,7 +234,9 @@ function findMatchingEvent(classification, kind) {
     const estimatedTime = classification.estimated_time || "";
 
     const candidates = Object.values(activeEvents).filter(event => {
-        if (event.kind !== kind) return false;
+        // Keep gathering evidence for a recently published event that still has unverified fields,
+        // even if the classifier labels the next message with the other valid event category.
+        if (event.kind !== kind && !event.corroborationPending) return false;
         if (source && event.source && source !== event.source) return false;
 
         const targetMatch = target && event.target && targetsOverlap(target, event.target);
@@ -410,7 +412,12 @@ function getPendingUncorroboratedFields(event, published) {
     const messages = getEvidenceMessages(event);
     const pending = new Set();
 
-    for (const [source, channels] of getSourceVoteMap(messages)) {
+    const sourceVotes = getSourceVoteMap(messages);
+    const confirmedSourceCandidates = [...sourceVotes.values()].filter(channels => channels.size >= 2);
+    if (sourceVotes.size > 1 && confirmedSourceCandidates.length !== 1) {
+        pending.add("source");
+    }
+    for (const [source, channels] of sourceVotes) {
         if (channels.size === 1 && source !== String(published && published.source || "")) {
             pending.add("source");
         }
@@ -513,6 +520,7 @@ async function publishNewAlert(event, callbacks, verifiedFields) {
         // Keep a short-lived evidence window so another channel can verify fields omitted
         // from the first message or add another independent ETA estimate.
         event.kind = "UPDATE_TO_LAST";
+        event.corroborationPending = true;
         log(`[Verification] ${event.id} sent verified fields only; waiting for: ${pendingFields.join(", ")}.`);
         return persistProcessorState();
     }
@@ -533,8 +541,9 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
     if (!hasNewSource && !hasNewTarget && !hasNewTime) {
         const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
         if (pendingFields.length > 0) {
+            event.corroborationPending = true;
             log(`[Verification] ${event.id} waiting for independent confirmation of: ${pendingFields.join(", ")}.`);
-            return true;
+            return persistProcessorState();
         }
         const removed = removeEvent(event.id);
         log(`[Dedup] No new corroborated information in ${event.id}.`);
@@ -563,6 +572,7 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
 
     const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
     if (pendingFields.length > 0) {
+        event.corroborationPending = true;
         log(`[Verification] ${event.id} update sent using corroborated fields only; still waiting for: ${pendingFields.join(", ")}.`);
         return persistProcessorState();
     }
