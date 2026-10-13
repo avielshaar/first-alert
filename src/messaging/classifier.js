@@ -22,6 +22,13 @@ const LAUNCH_WHITELIST = [
     "בדרך ל", "לעבר", "התרעה", "אזעקה", "התרעות", "הופעלו", "אישור", "דיווח"
 ];
 
+// Short-message overrides require a strong tactical signal. Generic words such as
+// "דיווח" or "אישור" can occur in unrelated headlines and are not enough by themselves.
+const SHORT_MESSAGE_LAUNCH_SIGNALS = [
+    "שיגור", "שיגורים", "ירי", "מטח", "מטחים", "טילים", "רקטות",
+    "אזעקה", "התרעה", "התרעות", "הופעלו"
+];
+
 const SOURCES = [
     { base: "איראן", keywords: ["איראן", "איראנים"] },
     { base: "לבנון", keywords: ["לבנון"] },
@@ -220,7 +227,9 @@ async function classifyMessage(channelId, messageText, lastPublished, messageTim
         aiReasoning = "AI identified launch, but no tactical data or keywords found. Overridden.";
     }
 
-    if (aiCategory === "IRRELEVANT" && (target || source) && hasLaunchWord && messageText.length <= 25) {
+    const hasExplicitLaunchSignal = SHORT_MESSAGE_LAUNCH_SIGNALS.some(word => messageText.includes(word));
+
+    if (aiCategory === "IRRELEVANT" && (target || source) && hasExplicitLaunchSignal && messageText.length <= 25) {
         aiCategory = "LAUNCH_REPORT";
         aiReasoning = "Overridden by deterministic: Short ping with valid tactical target/source.";
     }
