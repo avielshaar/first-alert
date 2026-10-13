@@ -16,6 +16,7 @@ let whatsappClient = null;
 let isReconnecting = false;
 let isShuttingDown = false;
 let reconnectTimer = null;
+let groupResolutionTimer = null;
 let whatsappAuthPath = null;
 
 function scheduleReconnect(callbacks) {
@@ -28,6 +29,41 @@ function scheduleReconnect(callbacks) {
         isReconnecting = false;
         initializeWhatsApp(callbacks);
     }, 5000);
+}
+
+function scheduleGroupResolutionRetry(client, callbacks) {
+    if (isShuttingDown || whatsappClient !== client || whatsappGroupChat || groupResolutionTimer) return;
+
+    // WhatsApp can report READY before all chats have synchronized. Retry lookup on the
+    // existing session instead of staying connected forever with no destination selected.
+    groupResolutionTimer = setTimeout(async () => {
+        groupResolutionTimer = null;
+        if (isShuttingDown || whatsappClient !== client || whatsappGroupChat) return;
+
+        try {
+            const chats = await client.getChats();
+            if (whatsappClient !== client || isShuttingDown) return;
+
+            whatsappGroupChat = findUniqueTargetGroup(chats, TARGET_WHATSAPP_GROUP);
+            if (!whatsappGroupChat) {
+                const matches = Array.isArray(chats)
+                    ? chats.filter(chat => chat && chat.isGroup === true && chat.name === TARGET_WHATSAPP_GROUP)
+                    : [];
+                const status = matches.length > 1
+                    ? "still ambiguous (" + matches.length + " exact matches)"
+                    : "still not found";
+                log("[WhatsApp] Target group " + status + " on retry: " + TARGET_WHATSAPP_GROUP);
+                scheduleGroupResolutionRetry(client, callbacks);
+                return;
+            }
+
+            log("[WhatsApp] Target group located after retry: " + whatsappGroupChat.name);
+            await onReady(callbacks);
+        } catch (err) {
+            log("[WhatsApp] Target group retry failed: " + (err.message || err));
+            scheduleGroupResolutionRetry(client, callbacks);
+        }
+    }, 60_000);
 }
 
 function initializeWhatsApp(callbacks) {
@@ -102,13 +138,19 @@ function initializeWhatsApp(callbacks) {
                     ? "ambiguous (" + matches.length + " exact matches)"
                     : "not found";
                 log("[WhatsApp] Target group " + status + ": " + TARGET_WHATSAPP_GROUP);
+                scheduleGroupResolutionRetry(client, callbacks);
                 return;
             }
 
+            if (groupResolutionTimer) {
+                clearTimeout(groupResolutionTimer);
+                groupResolutionTimer = null;
+            }
             log("[WhatsApp] Target group located: " + whatsappGroupChat.name);
             await onReady(callbacks);
         } catch (err) {
             log("[WhatsApp] Error fetching chats: " + (err && err.stack ? err.stack : String(err)));
+            scheduleGroupResolutionRetry(client, callbacks);
         }
     });
 
@@ -117,6 +159,10 @@ function initializeWhatsApp(callbacks) {
         if (whatsappClient !== client) return;
 
         log("[WhatsApp] Disconnected: " + reason);
+        if (groupResolutionTimer) {
+            clearTimeout(groupResolutionTimer);
+            groupResolutionTimer = null;
+        }
         isReconnecting = true;
         whatsappGroupChat = null;
         whatsappClient = null;
@@ -237,6 +283,10 @@ async function shutdownWhatsApp() {
     if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
+    }
+    if (groupResolutionTimer) {
+        clearTimeout(groupResolutionTimer);
+        groupResolutionTimer = null;
     }
 
     const client = whatsappClient;
