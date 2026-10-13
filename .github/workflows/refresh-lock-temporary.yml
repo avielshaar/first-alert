@@ -13,9 +13,10 @@ jobs:
   refresh-lock:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout beta
+      - name: Checkout latest beta
         uses: actions/checkout@v5
         with:
+          ref: beta
           persist-credentials: true
 
       - name: Set up Node.js 22
@@ -28,6 +29,20 @@ jobs:
 
       - name: Install resolved dependencies and apply local patches
         run: npm ci
+
+      - name: Commit resolved lockfile before validation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          if git diff --cached --quiet; then
+            echo "Lockfile did not change."
+          else
+            git commit -m "chore: refresh locked Puppeteer dependency tree"
+            git fetch origin beta
+            git rebase origin/beta
+            git push origin HEAD:beta
+          fi
 
       - name: Report dependency audit
         continue-on-error: true
@@ -56,15 +71,3 @@ jobs:
 
       - name: Build Docker image
         run: docker build --tag first-alert:dependency-refresh .
-
-      - name: Commit generated lockfile
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package-lock.json
-          if git diff --cached --quiet; then
-            echo "Lockfile did not change."
-          else
-            git commit -m "chore: refresh locked Puppeteer dependency tree"
-            git push origin HEAD:beta
-          fi
