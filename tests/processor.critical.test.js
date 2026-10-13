@@ -48,11 +48,28 @@ describe("critical processor regressions", () => {
         expect(Object.keys(getActiveEvents())).toHaveLength(1);
     });
 
+    test("saves the verified publication baseline only after a successful send", async () => {
+        await processMessage("channel-1", "report-1", callbacks, 101, 1767254400);
+        expect(getLastPublished()).toBeNull();
+
+        await processMessage("channel-2", "report-2", callbacks, 202, 1767254401);
+
+        expect(callbacks.alert).toHaveBeenCalledTimes(1);
+        expect(getLastPublished()).toMatchObject({
+            source: "איראן",
+            target: "מרכז",
+            estimated_time: "10:30",
+            verificationVersion: 1,
+        });
+        expect(getLastPublished().publishedAt).toBeLessThanOrEqual(Date.now());
+    });
+
     test("a failed delivery keeps the event and asks Telegram to retry", async () => {
         callbacks.alert.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         await processMessage("channel-1", "report-1", callbacks, 101, 1767254400);
         const firstAttempt = await processMessage("channel-2", "report-2", callbacks, 202, 1767254400);
         expect(firstAttempt).toBe(false);
+        expect(getLastPublished()).toBeNull();
         expect(Object.keys(getActiveEvents())).toHaveLength(1);
         expect(Object.values(getActiveEvents())[0].deliveryPending).toBe(true);
 
