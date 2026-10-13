@@ -43,6 +43,12 @@ COPY package*.json ./
 COPY patches ./patches
 RUN npm ci
 RUN npm prune --omit=dev --ignore-scripts
+
+# Exercise the actual production dependency graph while building the image. This catches
+# Puppeteer/whatsapp-web.js module-format and Chromium runtime-library incompatibilities
+# without needing Telegram, Gemini, or a logged-in WhatsApp account.
+RUN node -e 'const { Client } = require("whatsapp-web.js"); const puppeteer = require("puppeteer"); if (typeof Client !== "function" || typeof puppeteer.launch !== "function") throw new Error("WhatsApp/Puppeteer runtime exports are unavailable"); (async () => { const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"] }); try { const page = await browser.newPage(); await page.setContent("<title>First-Alert Chromium smoke test</title>"); if (await page.title() !== "First-Alert Chromium smoke test") throw new Error("Chromium page smoke test failed"); } finally { await browser.close(); } })().catch(error => { console.error(error); process.exit(1); });'
+
 COPY . .
 RUN mkdir -p /app/data
 VOLUME ["/app/data"]
