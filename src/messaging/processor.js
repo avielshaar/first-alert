@@ -509,11 +509,16 @@ function mergeClassificationIntoEvent(event, classification) {
 }
 
 async function publishNewAlert(event, callbacks, verifiedFields) {
-    const result = await callbacks.alert(
-        verifiedFields.source || "",
-        verifiedFields.target || "",
-        verifiedFields.estimated_time || ""
-    );
+    let result = false;
+    try {
+        result = await callbacks.alert(
+            verifiedFields.source || "",
+            verifiedFields.target || "",
+            verifiedFields.estimated_time || ""
+        );
+    } catch (error) {
+        log(`[Dispatch] Alert callback threw for ${event.id}: ${error.message || error}`);
+    }
     if (!result) {
         // A failed external delivery is an outbox item, not a short-lived correlation event.
         // Keep it until delivery succeeds so an outage longer than CONTEXT_WINDOW_MS cannot
@@ -580,11 +585,16 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
         hasNewTarget && "target",
         hasNewTime && "time",
     ].filter(Boolean).join("+");
-    const result = await callbacks.update(
-        { source: finalSource, target: finalTarget, estimated_time: finalTime },
-        lastPublished,
-        updateType
-    );
+    let result = false;
+    try {
+        result = await callbacks.update(
+            { source: finalSource, target: finalTarget, estimated_time: finalTime },
+            lastPublished,
+            updateType
+        );
+    } catch (error) {
+        log(`[Dispatch] Update callback threw for ${event.id}: ${error.message || error}`);
+    }
     if (!result) {
         event.deliveryPending = true;
         const persisted = persistProcessorState();
