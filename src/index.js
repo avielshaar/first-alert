@@ -10,20 +10,14 @@ if (configErrors.length > 0) {
 
 const { initializeWhatsApp, sendAlert, sendUpdate, shutdownWhatsApp } = require("./clients/whatsapp");
 const { shutdownTelegram } = require("./clients/telegram");
-const { setLastPublished } = require("./messaging/processor");
-
 const callbacks = {
+    // The processor owns the durable publication baseline. It updates that baseline only after
+    // delivery succeeds and persists it atomically with the event state.
     async alert(source, target, estimated_time) {
-        const result = await sendAlert(source, target, estimated_time);
-        if (!result) return false;
-        setLastPublished(result.source, result.target, result.estimated_time);
-        return true;
+        return Boolean(await sendAlert(source, target, estimated_time));
     },
     async update(updatedFields, prevPublished, updateType) {
-        const result = await sendUpdate(updatedFields, prevPublished, updateType);
-        if (!result) return false;
-        setLastPublished(result.source, result.target, result.estimated_time);
-        return true;
+        return Boolean(await sendUpdate(updatedFields, prevPublished, updateType));
     },
 };
 
