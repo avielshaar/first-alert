@@ -57,25 +57,20 @@ describe("WhatsApp lifecycle recovery", () => {
         jest.dontMock("../src/clients/whatsapp-helpers");
     });
 
-    async function startAndEmitReady() {
+    async function start() {
         whatsapp.initializeWhatsApp({});
         await jest.advanceTimersByTimeAsync(0);
         expect(client).not.toBeNull();
-        client.emit("ready");
-        await jest.advanceTimersByTimeAsync(0);
     }
 
     test("retries exact target-group discovery when chats have not synchronized yet", async () => {
         const target = { isGroup: true, name: "Alert Group" };
-        client = null;
-        // The mock constructor assigns client only when initializeWhatsApp is called.
+        await start();
         // Return no chats at first, then the exact group during the retry.
-        await startAndEmitReady();
         client.getChats
             .mockResolvedValueOnce([])
             .mockResolvedValueOnce([target]);
 
-        // Emit READY a second time to consume the first (empty) chat result.
         client.emit("ready");
         await jest.advanceTimersByTimeAsync(0);
         expect(onReady).not.toHaveBeenCalled();
@@ -90,7 +85,6 @@ describe("WhatsApp lifecycle recovery", () => {
         onReady.mockRejectedValueOnce(new Error("temporary Telegram connection failure"))
             .mockResolvedValueOnce(undefined);
 
-        // Re-emit READY so this test controls the group lookup result.
         client.emit("ready");
         await jest.advanceTimersByTimeAsync(0);
         expect(onReady).toHaveBeenCalledTimes(1);
