@@ -64,6 +64,27 @@ describe("critical processor regressions", () => {
         expect(getLastPublished().publishedAt).toBeLessThanOrEqual(Date.now());
     });
 
+    test("a thrown delivery callback is retained as pending and can be retried", async () => {
+        callbacks.alert.mockRejectedValueOnce(new Error("transient send failure"));
+
+        await processMessage("channel-1", "report-1", callbacks, 101, 1767254400);
+        const firstAttempt = await processMessage("channel-2", "report-2", callbacks, 202, 1767254400);
+
+        expect(firstAttempt).toBe(false);
+        expect(getLastPublished()).toBeNull();
+        expect(Object.values(getActiveEvents())[0].deliveryPending).toBe(true);
+
+        const retry = await processMessage("channel-2", "report-2", callbacks, 202, 1767254400);
+
+        expect(retry).toBe(true);
+        expect(callbacks.alert).toHaveBeenCalledTimes(2);
+        expect(getLastPublished()).toMatchObject({
+            source: "איראן",
+            target: "מרכז",
+            verificationVersion: 1,
+        });
+    });
+
     test("a failed delivery keeps the event and asks Telegram to retry", async () => {
         callbacks.alert.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         await processMessage("channel-1", "report-1", callbacks, 101, 1767254400);
