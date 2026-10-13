@@ -221,10 +221,10 @@ The test suite covers:
 GitHub Actions runs on pushes and pull requests targeting `main`, `master`, and `beta`. It uses Node.js 22 and performs:
 
 1. `npm ci`, including patch application.
-2. Full and production-only dependency audit reporting, which is non-blocking.
+2. Full dependency audit reporting (informational) and a blocking production-only audit (`npm audit --omit=dev`).
 3. JavaScript syntax checks across `src` and `tests`.
 4. Jest tests.
-5. A Docker image build.
+5. A Docker image build that explicitly installs Chrome and runs a Chromium page smoke test against the production `whatsapp-web.js`/Puppeteer dependency graph.
 
 Unit tests and a successful image build do not validate a live authenticated Telegram/Gemini/WhatsApp session.
 
@@ -234,7 +234,8 @@ Unit tests and a successful image build do not validate a live authenticated Tel
 - **Retries are not a delivery guarantee:** Pending delivery state and its verified publication baseline are now saved together after successful delivery; callback exceptions keep the event pending. This improves local consistency but is not a transactional outbox, and live recovery after outages and restarts still needs testing.
 - **Short-lived evidence:** Ordinary pending events expire after two minutes of inactivity when cleanup next runs. Cross-channel confirmation means distinct configured channels, not proof that those channels have independent original sources.
 - **WhatsApp Web compatibility:** The committed `whatsapp-web.js@1.34.7` patch normalizes internal IDs and isolates failures while resolving chats/channels and metadata. It touches private WhatsApp Web structures; revalidate patch application and a real authenticated session after client or web changes.
-- **Dependency audit (latest CI result):** The full development graph reports 23 findings (19 moderate, 4 high); `npm audit --omit=dev` reports 0 known production vulnerabilities after the Puppeteer override. The remaining high findings are in development tooling (including `patch-package` and transitive dependencies). Audit reporting remains non-blocking. Re-run both audits after dependency changes, and do not force-downgrade tooling without compatibility tests.
+- **Dependency audit (latest CI result):** The full development graph reports 23 findings (19 moderate, 4 high); `npm audit --omit=dev` reports 0 known production vulnerabilities after the Puppeteer override. The remaining high findings are in development tooling (including `patch-package` and transitive dependencies). The full-graph audit is informational, while production audit blocks CI. Re-run both audits after dependency changes, and do not force-downgrade tooling without compatibility tests.
+- **Browser runtime smoke test:** The Docker build explicitly clears partial Puppeteer cache, installs Chrome (using `unzip` for extraction), then launches Chromium and verifies a page title. This catches basic module, browser-download, and runtime-library issues, but it is not an authenticated WhatsApp test.
 - **Browser isolation:** The WhatsApp client launches Puppeteer with sandbox-disabling flags. Account for this when deciding where and how to run it.
 
 This project aggregates channel reports; corroboration and AI classification do not establish that a report is official or correct. Use official emergency guidance for safety decisions.
