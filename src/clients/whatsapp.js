@@ -17,6 +17,10 @@ let isReconnecting = false;
 let isShuttingDown = false;
 let reconnectTimer = null;
 let groupResolutionTimer = null;
+let telegramStartTimer = null;
+let telegramStartInProgress = false;
+let telegramStarted = false;
+let telegramStartRequiresManualRepair = false;
 let whatsappAuthPath = null;
 
 function scheduleReconnect(callbacks) {
@@ -29,6 +33,67 @@ function scheduleReconnect(callbacks) {
         isReconnecting = false;
         initializeWhatsApp(callbacks);
     }, 5000);
+}
+
+function clearTelegramStartRetry() {
+    if (telegramStartTimer) {
+        clearTimeout(telegramStartTimer);
+        telegramStartTimer = null;
+    }
+}
+
+function scheduleTelegramStartRetry(client, callbacks) {
+    if (
+        isShuttingDown ||
+        whatsappClient !== client ||
+        !whatsappGroupChat ||
+        telegramStarted ||
+        telegramStartRequiresManualRepair ||
+        telegramStartTimer
+    ) return;
+
+    log("[Telegram] Retrying Telegram startup in 15 seconds...");
+    telegramStartTimer = setTimeout(() => {
+        telegramStartTimer = null;
+        if (isShuttingDown || whatsappClient !== client || !whatsappGroupChat) return;
+        void startTelegramWithRecovery(client, callbacks);
+    }, 15_000);
+}
+
+async function startTelegramWithRecovery(client, callbacks) {
+    if (
+        isShuttingDown ||
+        whatsappClient !== client ||
+        !whatsappGroupChat ||
+        telegramStarted ||
+        telegramStartInProgress ||
+        telegramStartRequiresManualRepair
+    ) return;
+
+    telegramStartInProgress = true;
+    try {
+        await onReady(callbacks);
+        // Telegram is independent from WhatsApp after authentication. Even if WhatsApp
+        // disconnects during startup, a successful Telegram start must not be repeated.
+        telegramStarted = true;
+        clearTelegramStartRetry();
+        log("[Telegram] Startup completed.");
+    } catch (err) {
+        if (err && err.retryable === false) {
+            telegramStartRequiresManualRepair = true;
+            clearTelegramStartRetry();
+            log("[Telegram] Startup cannot be retried automatically; repair the saved configuration/state and restart: " + (err.message || err));
+            return;
+        }
+        log("[Telegram] Startup failed: " + (err.message || err));
+        scheduleTelegramStartRetry(client, callbacks);
+    } finally {
+        telegramStartInProgress = false;
+        if (!telegramStarted && !telegramStartRequiresManualRepair && !isShuttingDown &&
+            whatsappClient && whatsappGroupChat && !telegramStartTimer) {
+            scheduleTelegramStartRetry(whatsappClient, callbacks);
+        }
+    }
 }
 
 function scheduleGroupResolutionRetry(client, callbacks) {
@@ -58,7 +123,7 @@ function scheduleGroupResolutionRetry(client, callbacks) {
             }
 
             log("[WhatsApp] Target group located after retry: " + whatsappGroupChat.name);
-            await onReady(callbacks);
+            void startTelegramWithRecovery(client, callbacks);
         } catch (err) {
             log("[WhatsApp] Target group retry failed: " + (err.message || err));
             scheduleGroupResolutionRetry(client, callbacks);
@@ -147,7 +212,7 @@ function initializeWhatsApp(callbacks) {
                 groupResolutionTimer = null;
             }
             log("[WhatsApp] Target group located: " + whatsappGroupChat.name);
-            await onReady(callbacks);
+            void startTelegramWithRecovery(client, callbacks);
         } catch (err) {
             log("[WhatsApp] Error fetching chats: " + (err && err.stack ? err.stack : String(err)));
             scheduleGroupResolutionRetry(client, callbacks);
@@ -163,6 +228,7 @@ function initializeWhatsApp(callbacks) {
             clearTimeout(groupResolutionTimer);
             groupResolutionTimer = null;
         }
+        clearTelegramStartRetry();
         isReconnecting = true;
         whatsappGroupChat = null;
         whatsappClient = null;
@@ -288,6 +354,7 @@ async function shutdownWhatsApp() {
         clearTimeout(groupResolutionTimer);
         groupResolutionTimer = null;
     }
+    clearTelegramStartRetry();
 
     const client = whatsappClient;
     whatsappClient = null;
