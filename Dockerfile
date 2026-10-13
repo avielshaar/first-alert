@@ -44,7 +44,7 @@ COPY patches ./patches
 RUN npm ci
 RUN npm prune --omit=dev --ignore-scripts
 # Install the browser explicitly instead of assuming the Puppeteer postinstall download ran.
-RUN ./node_modules/.bin/puppeteer browsers clear && ./node_modules/.bin/puppeteer browsers install chrome
+RUN rm -rf /root/.cache/puppeteer && ./node_modules/.bin/puppeteer browsers install chrome
 
 # Exercise the actual production dependency graph while building the image. This catches
 # Puppeteer/whatsapp-web.js module-format and Chromium runtime-library incompatibilities
