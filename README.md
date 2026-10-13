@@ -39,17 +39,17 @@ One target WhatsApp group
 - **Follow-up evidence:** Successfully published events stay open briefly so later channel reports can confirm omitted fields or refine the ETA. New information is published only after its field-level confirmation rules are met.
 - **Retry-aware processing:** Gemini transport/schema failures request a retry rather than becoming irrelevant messages. Selected temporary API errors are retried up to three attempts with backoff. Failed WhatsApp delivery retains pending event state and holds the current Telegram cursor; delivery-pending events are excluded from ordinary context-window cleanup.
 - **Restart recovery:** Telegram cursors, processor state, Telegram sessions, and WhatsApp authentication default to `./data`. Cursor and processor state use temporary-file writes followed by rename. Invalid saved cursor or processor state fails closed instead of silently starting over.
-- **WhatsApp lifecycle handling:** Exact group matching, legacy auth migration, reconnect scheduling, duplicate-initialization guards, stale-client event checks, and shutdown cleanup are implemented.
+- **WhatsApp lifecycle handling:** Exact group matching, legacy auth migration, reconnect scheduling, duplicate-initialization guards, stale-client event checks, retryable group discovery, Telegram-startup recovery, and shutdown cleanup are implemented.
 
 ## Tech stack
 
 - Runtime: Node.js 22, used by CI and the Docker image
 - AI: Google GenAI SDK (`@google/genai`); default model string: `gemini-3.5-flash-lite`
 - Telegram: `telegram` (GramJS MTProto user-account client), `input`
-- WhatsApp: `whatsapp-web.js` with Puppeteer and `qrcode-terminal`
+- WhatsApp: `whatsapp-web.js` 1.34.7 with a local compatibility patch, Puppeteer 25.13.0, and `qrcode-terminal`
 - Configuration: `dotenv`
 - Tests: Jest
-- Dependency compatibility patch: `patch-package`
+- Dependency compatibility patch: `patch-package`; `package.json` pins the WhatsApp Web client’s Puppeteer dependency to 25.13.0 through an override, with the lockfile regenerated and the local patch confirmed to apply in CI.
 
 `GEMINI_MODEL` can override the code default. Model availability and API access must be checked with the Google account used for deployment; the unit tests mock Gemini and do not establish live model availability.
 
@@ -231,10 +231,10 @@ Unit tests and a successful image build do not validate a live authenticated Tel
 ## Operational limits and security
 
 - **Not exactly-once delivery:** WhatsApp can accept a message before a crash or failed local state write. A retry or restart can send a duplicate. There is no provider-side idempotency key or transactional outbox.
-- **Retries are not a delivery guarantee:** Pending delivery state is retained, but retry processing still depends on the current classifier result, event correlation, and publication baseline. Confirm live behavior after outages and restarts before relying on deployment.
+- **Retries are not a delivery guarantee:** Pending delivery state and its verified publication baseline are now saved together after successful delivery; callback exceptions keep the event pending. This improves local consistency but is not a transactional outbox, and live recovery after outages and restarts still needs testing.
 - **Short-lived evidence:** Ordinary pending events expire after two minutes of inactivity when cleanup next runs. Cross-channel confirmation means distinct configured channels, not proof that those channels have independent original sources.
 - **WhatsApp Web compatibility:** The committed `whatsapp-web.js@1.34.7` patch normalizes internal IDs and isolates failures while resolving chats/channels and metadata. It touches private WhatsApp Web structures; revalidate patch application and a real authenticated session after client or web changes.
-- **Open dependency findings:** The repository documents unresolved high-severity findings in the WhatsApp/Puppeteer dependency chain. Audit reporting does not block CI, so passing checks do not mean the dependency risk is cleared. Review `PATCH_NOTES.md`, rerun `npm audit` and `npm audit --omit=dev`, and test any upgrade against the patch and live session. Do not apply forced downgrades without compatibility testing.
+- **Dependency audit (latest CI result):** The full development graph reports 23 findings (19 moderate, 4 high); `npm audit --omit=dev` reports 0 known production vulnerabilities after the Puppeteer override. The remaining high findings are in development tooling (including `patch-package` and transitive dependencies). Audit reporting remains non-blocking. Re-run both audits after dependency changes, and do not force-downgrade tooling without compatibility tests.
 - **Browser isolation:** The WhatsApp client launches Puppeteer with sandbox-disabling flags. Account for this when deciding where and how to run it.
 
 This project aggregates channel reports; corroboration and AI classification do not establish that a report is official or correct. Use official emergency guidance for safety decisions.
