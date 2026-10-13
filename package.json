@@ -23,5 +23,10 @@
   "devDependencies": {
     "jest": "^30.5.2",
     "patch-package": "^8.0.1"
+  },
+  "overrides": {
+    "whatsapp-web.js": {
+      "puppeteer": "25.13.0"
+    }
   }
 }
