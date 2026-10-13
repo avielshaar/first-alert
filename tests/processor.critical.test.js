@@ -5,6 +5,9 @@ process.env.FIRST_ALERT_STATE_FILE = path.join(os.tmpdir(), `first-alert-${proce
 jest.mock("../src/messaging/classifier", () => ({
     classifyMessage: jest.fn(),
     checkForNewInfo: jest.fn(),
+    extractSource: jest.fn(text => /איראן/.test(text) ? "איראן" : /לבנון/.test(text) ? "לבנון" : ""),
+    extractTargets: jest.fn(text => /מרכז|גוש דן|תל אביב/.test(text) ? "מרכז" : /צפון/.test(text) ? "צפון" : ""),
+    extractTime: jest.fn(() => ""),
 }));
 const { classifyMessage, checkForNewInfo } = require("../src/messaging/classifier");
 const {
@@ -35,6 +38,7 @@ function clearEvents() {
 describe("critical processor regressions", () => {
     beforeEach(() => {
         jest.clearAllMocks();
+        classifyMessage.mockReset();
         clearEvents();
         setLastPublished(null, null, null);
         callbacks.alert.mockResolvedValue(true);
