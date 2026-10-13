@@ -1,7 +1,7 @@
 {
   "name": "whatsappalertsbot",
   "version": "1.0.0",
-  "description": "Telegram-to-WhatsApp alert aggregation with AI classification and cross-channel confirmation",
+  "description": "Telegram-to-WhatsApp alert aggregation with AI classification, cross-channel confirmation, and retry-aware delivery",
   "main": "src/index.js",
   "scripts": {
     "postinstall": "patch-package",
