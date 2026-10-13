@@ -19,6 +19,8 @@ const stateFile = process.env.FIRST_ALERT_STATE_FILE || "./data/processor-state.
 const activeEvents = {};
 let lastPublished = null;
 let nextEventId = 1;
+// If an in-memory state transition cannot be saved, hold the Telegram cursor until persistence recovers.
+let stateNeedsPersistence = false;
 
 function persistProcessorState() {
     const payload = {
@@ -37,8 +39,10 @@ function persistProcessorState() {
         require("fs").writeFileSync(tempFile, JSON.stringify(payload, null, 2), { mode: 0o600 });
         try { require("fs").chmodSync(tempFile, 0o600); } catch (_) { /* best effort on platforms without POSIX modes */ }
         require("fs").renameSync(tempFile, stateFile);
+        stateNeedsPersistence = false;
         return true;
     } catch (error) {
+        stateNeedsPersistence = true;
         log(`[State] Could not persist processor state to ${stateFile}: ${error.message || error}`);
         try { require("fs").unlinkSync(tempFile); } catch (_) { /* ignore temp cleanup failure */ }
         return false;
@@ -523,6 +527,15 @@ async function publishNewAlert(event, callbacks, verifiedFields) {
         return false;
     }
 
+    lastPublished = {
+        source: verifiedFields.source || "",
+        target: verifiedFields.target || "",
+        estimated_time: verifiedFields.estimated_time || "",
+        verificationVersion: 1,
+        publishedAt: Date.now(),
+    };
+    delete event.deliveryPending;
+
     const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
     // Keep a two-minute evidence window even after an alert is sent. This lets a third
     // independent channel refine the ETA (median/range) and helps verify any field omitted
@@ -582,6 +595,15 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
         return false;
     }
 
+    lastPublished = {
+        source: finalSource,
+        target: finalTarget,
+        estimated_time: finalTime,
+        verificationVersion: 1,
+        publishedAt: Date.now(),
+    };
+    delete event.deliveryPending;
+
     const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
     event.corroborationPending = true;
     if (pendingFields.length > 0) {
@@ -593,6 +615,10 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
 }
 
 async function processMessage(channelId, messageText, callbacks, messageId = null, messageTimestamp = null) {
+    // Do not classify or acknowledge a new Telegram message while a previous state transition
+    // remains unsaved. Retry persistence first so a successful send is not blindly repeated.
+    if (stateNeedsPersistence && !persistProcessorState()) return false;
+
     const now = Date.now();
     expireStaleLastPublished(now);
     if (!cleanupExpiredEvents(now)) return false;
