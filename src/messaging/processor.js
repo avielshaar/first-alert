@@ -624,7 +624,48 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
     return persistProcessorState();
 }
 
-async function processMessage(channelId, messageText, callbacks, messageId = null, messageTimestamp = null) {
+async // Attach a terse region-only follow-up (for example, "מרכז") to a unique, recent
+// source-only launch event. It is recorded as evidence, not treated as an alert on its own.
+function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTimestamp, now) {
+    const text = String(messageText || "").trim();
+    if (!text || text.length > 25) return null;
+
+    const source = safelyExtract(extractSource, text);
+    const target = safelyExtract(extractTargets, text);
+    const estimatedTime = safelyExtract(extractTime, text, messageTimestamp || now);
+    if (source || !target || estimatedTime) return null;
+
+    const candidates = Object.values(activeEvents).filter(event =>
+        event.kind === "LAUNCH_REPORT" &&
+        !event.deliveryPending &&
+        Boolean(event.source) &&
+        !event.target &&
+        now - event.lastSeen <= CONTEXT_WINDOW_MS
+    );
+
+    // Never guess when more than one incomplete incident could own this region.
+    if (candidates.length !== 1) return null;
+
+    const event = candidates[0];
+    const partialClassification = {
+        source: "",
+        target,
+        estimated_time: "",
+        reportedSource: "",
+        reportedTarget: target,
+        reportedEstimatedTime: "",
+    };
+    mergeClassificationIntoEvent(event, partialClassification);
+    addMessageToEvent(
+        event, channelId, text, messageId, messageTimestamp, now, partialClassification
+    );
+    if (!persistProcessorState()) return false;
+
+    log(`[Events] Attached region-only follow-up "${text}" to ${event.id}; waiting for independent confirmation.`);
+    return true;
+}
+
+function processMessage(channelId, messageText, callbacks, messageId = null, messageTimestamp = null) {
     // Do not classify or acknowledge a new Telegram message while a previous state transition
     // remains unsaved. Retry persistence first so a successful send is not blindly repeated.
     if (stateNeedsPersistence && !persistProcessorState()) return false;
@@ -650,7 +691,12 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
 
     // An API outage or malformed AI output is not the same as a valid IRRELEVANT classification.
     if (classification.category === "PROCESSING_ERROR") return false;
-    if (classification.category === "IRRELEVANT") return true;
+    if (classification.category === "IRRELEVANT") {
+        const attached = attachRegionOnlyFollowUp(
+            channelId, messageText, messageId, messageTimestamp, now
+        );
+        return attached === null ? true : attached;
+    }
     if (!["LAUNCH_REPORT", "UPDATE_TO_LAST"].includes(classification.category)) {
         log("[Processor] Unknown classifier category; retaining message for retry.");
         return false;
