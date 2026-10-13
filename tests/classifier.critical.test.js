@@ -30,6 +30,26 @@ describe("critical classifier regressions", () => {
         }));
     });
 
+    test("does not promote a short geography-only mention into a launch", async () => {
+        mockGenerateContent.mockResolvedValue({
+            text: JSON.stringify({ category: "IRRELEVANT", reasoning: "A region mention is not a launch report." }),
+        });
+
+        const result = await classifyMessage("channel", "מרכז", null);
+
+        expect(result.category).toBe("IRRELEVANT");
+    });
+
+    test("still permits a short explicit launch report when the model is conservative", async () => {
+        mockGenerateContent.mockResolvedValue({
+            text: JSON.stringify({ category: "IRRELEVANT", reasoning: "Conservative test response." }),
+        });
+
+        const result = await classifyMessage("channel", "ירי בצפון", null);
+
+        expect(result.category).toBe("LAUNCH_REPORT");
+    });
+
     test("AI transport failure is retryable, not silently classified as irrelevant", async () => {
         mockGenerateContent.mockRejectedValue(new Error("Invalid API key"));
         const result = await classifyMessage("channel", "שיגורים לעבר גוש דן", null);
