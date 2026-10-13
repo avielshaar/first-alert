@@ -81,6 +81,7 @@ describe("WhatsApp lifecycle recovery", () => {
 
     test("retries Telegram startup separately after WhatsApp already found its group", async () => {
         const target = { isGroup: true, name: "Alert Group" };
+        await start();
         client.getChats.mockResolvedValue([target]);
         onReady.mockRejectedValueOnce(new Error("temporary Telegram connection failure"))
             .mockResolvedValueOnce(undefined);
