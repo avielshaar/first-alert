@@ -58,6 +58,11 @@ jobs:
           report("npm-audit-production.json");
           NODE
 
+      # The full development graph is reported above, but advisories in runtime dependencies
+      # must block changes. The previous report step is informational and intentionally non-blocking.
+      - name: Enforce production dependency audit
+        run: npm audit --omit=dev
+
       - name: Check JavaScript syntax
         run: find src tests -type f -name '*.js' -print0 | xargs -0 -n1 node --check
 
