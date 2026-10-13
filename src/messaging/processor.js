@@ -624,7 +624,7 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
     return persistProcessorState();
 }
 
-async // Attach a terse region-only follow-up (for example, "מרכז") to a unique, recent
+// Attach a terse region-only follow-up (for example, "מרכז") to a unique, recent
 // source-only launch event. It is recorded as evidence, not treated as an alert on its own.
 function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTimestamp, now) {
     const text = String(messageText || "").trim();
@@ -665,7 +665,7 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
     return true;
 }
 
-function processMessage(channelId, messageText, callbacks, messageId = null, messageTimestamp = null) {
+async function processMessage(channelId, messageText, callbacks, messageId = null, messageTimestamp = null) {
     // Do not classify or acknowledge a new Telegram message while a previous state transition
     // remains unsaved. Retry persistence first so a successful send is not blindly repeated.
     if (stateNeedsPersistence && !persistProcessorState()) return false;
