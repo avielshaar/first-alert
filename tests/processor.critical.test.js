@@ -153,6 +153,77 @@ describe("critical processor regressions", () => {
         expect(retained[0].corroborationPending).toBe(true);
     });
 
+    test("joins a short region-only follow-up to a unique recent source-only alert", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT",
+                reasoning: "source-only launch",
+                source: "איראן",
+                target: "",
+                estimated_time: "",
+                reportedSource: "איראן",
+                reportedTarget: "",
+                reportedEstimatedTime: "",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT",
+                reasoning: "region-only follow-up",
+                source: "",
+                target: "",
+                estimated_time: "",
+            })
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT",
+                reasoning: "independent complete report",
+                source: "איראן",
+                target: "מרכז",
+                estimated_time: "",
+                reportedSource: "איראן",
+                reportedTarget: "מרכז",
+                reportedEstimatedTime: "",
+            });
+
+        await processMessage("channel-1", "שיגורים מאיראן", callbacks, 301, Date.now());
+        await processMessage("channel-1", "מרכז", callbacks, 302, Date.now());
+
+        expect(callbacks.alert).not.toHaveBeenCalled();
+        const eventsAfterFollowUp = Object.values(getActiveEvents());
+        expect(eventsAfterFollowUp).toHaveLength(1);
+        expect(eventsAfterFollowUp[0].target).toBe("מרכז");
+        expect(eventsAfterFollowUp[0].messages).toHaveLength(2);
+        expect(eventsAfterFollowUp[0].messages[1].reportedTarget).toBe("מרכז");
+
+        await processMessage("channel-2", "שיגורים מאיראן למרכז", callbacks, 401, Date.now());
+
+        expect(callbacks.alert).toHaveBeenCalledTimes(1);
+        expect(callbacks.alert).toHaveBeenCalledWith("איראן", "מרכז", "");
+        expect(getLastPublished()).toMatchObject({ source: "איראן", target: "מרכז" });
+    });
+
+    test("does not attach a region-only follow-up when multiple source-only incidents are candidates", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT", reasoning: "Iran report",
+                source: "איראן", target: "", estimated_time: "",
+            })
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT", reasoning: "Lebanon report",
+                source: "לבנון", target: "", estimated_time: "",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT", reasoning: "region-only follow-up",
+                source: "", target: "", estimated_time: "",
+            });
+
+        await processMessage("channel-1", "שיגורים מאיראן", callbacks, 501, Date.now());
+        await processMessage("channel-2", "שיגורים מלבנון", callbacks, 601, Date.now());
+        await processMessage("channel-3", "מרכז", callbacks, 701, Date.now());
+
+        expect(Object.values(getActiveEvents())).toHaveLength(2);
+        expect(Object.values(getActiveEvents()).every(event => event.target === "")).toBe(true);
+        expect(callbacks.alert).not.toHaveBeenCalled();
+    });
+
     test("a processing error is not acknowledged as an irrelevant message", async () => {
         classifyMessage.mockResolvedValue({ category: "PROCESSING_ERROR", retryable: true, reasoning: "API unavailable" });
         const result = await processMessage("channel-1", "report", callbacks, 101, 1767254400);
