@@ -40,6 +40,16 @@ describe("critical classifier regressions", () => {
         expect(result.category).toBe("IRRELEVANT");
     });
 
+    test("does not treat a generic report word as an explicit launch signal", async () => {
+        mockGenerateContent.mockResolvedValue({
+            text: JSON.stringify({ category: "IRRELEVANT", reasoning: "Generic report text is not a launch." }),
+        });
+
+        const result = await classifyMessage("channel", "דיווח במרכז", null);
+
+        expect(result.category).toBe("IRRELEVANT");
+    });
+
     test("still permits a short explicit launch report when the model is conservative", async () => {
         mockGenerateContent.mockResolvedValue({
             text: JSON.stringify({ category: "IRRELEVANT", reasoning: "Conservative test response." }),
