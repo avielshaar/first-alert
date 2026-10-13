@@ -22,6 +22,10 @@ const initializedChannels = new Set(cursorState.initializedChannels);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let polling = false;
 let pollingTask = null;
+let pollingSupervisorTask = null;
+let telegramStartTask = null;
+let shutdownRequested = false;
+const pendingBaselineByChannel = new Map();
 const retryAfterByChannel = new Map();
 
 if (cursorState.error) {
@@ -34,17 +38,34 @@ function persistMessageCursor(channelId, messageId) {
     initializedChannels.add(String(channelId));
 }
 
-async function startTelegramClient(callbacks) {
-    if (telegramClient && polling) {
-        log("[Telegram] Client is already running; skipping duplicate initialization.");
-        return;
+function startTelegramClient(callbacks) {
+    if (shutdownRequested) {
+        return Promise.reject(new Error("Telegram is shutting down; refusing to initialize a new client."));
     }
+    if (telegramClient && (polling || pollingSupervisorTask)) {
+        log("[Telegram] Client is already running or recovery is scheduled; skipping duplicate initialization.");
+        return Promise.resolve();
+    }
+    if (telegramStartTask) return telegramStartTask;
+
+    telegramStartTask = startTelegramClientInternal(callbacks)
+        .finally(() => { telegramStartTask = null; });
+    return telegramStartTask;
+}
+
+async function startTelegramClientInternal(callbacks) {
     if (cursorState.error) {
-        throw new Error(
+        const error = new Error(
             "Telegram cursor state is invalid (" + cursorState.error +
             "). Refusing to establish a fresh baseline because it could skip unprocessed alerts. " +
             "Back up and repair the cursor file, then restart the application."
         );
+        error.retryable = false;
+        throw error;
+    }
+    if (telegramClient) {
+        try { await telegramClient.disconnect(); } catch (_) { /* replace a stale failed client */ }
+        telegramClient = null;
     }
 
     log("[Telegram] Initializing client...");
@@ -62,21 +83,25 @@ async function startTelegramClient(callbacks) {
     if (fs.existsSync(sessionFile)) sessionString = fs.readFileSync(sessionFile, "utf8");
 
     const stringSession = new StringSession(sessionString);
-    telegramClient = new TelegramClient(stringSession, TELEGRAM_API_ID, TELEGRAM_API_HASH, {
+    const client = new TelegramClient(stringSession, TELEGRAM_API_ID, TELEGRAM_API_HASH, {
         connectionRetries: 5,
     });
+    telegramClient = client;
 
-    await telegramClient.start({
-        phoneNumber: async () => input.text("[Telegram Auth] Enter your phone number: "),
-        password: async () => input.text("[Telegram Auth] Enter your 2FA password: "),
-        phoneCode: async () => input.text("[Telegram Auth] Enter the code: "),
-        onError: err => log("[Telegram Auth] Error: " + (err.message || err)),
-    });
+    try {
+        await client.start({
+            phoneNumber: async () => input.text("[Telegram Auth] Enter your phone number: "),
+            password: async () => input.text("[Telegram Auth] Enter your 2FA password: "),
+            phoneCode: async () => input.text("[Telegram Auth] Enter the code: "),
+            onError: err => log("[Telegram Auth] Error: " + (err.message || err)),
+        });
+        if (shutdownRequested) throw new Error("Telegram startup interrupted by shutdown.");
 
-    fs.writeFileSync(sessionFile, telegramClient.session.save(), { mode: 0o600 });
-    log("[Telegram] ✅ Connected successfully!");
+        fs.writeFileSync(sessionFile, client.session.save(), { mode: 0o600 });
+        try { fs.chmodSync(sessionFile, 0o600); } catch (_) { /* best effort */ }
+        log("[Telegram] ✅ Connected successfully!");
 
-    log("[Telegram] 🔍 Initializing trackers...");
+        log("[Telegram] 🔍 Initializing trackers...");
     for (const id of ALERT_CHANNELS) {
         if (!id) continue;
         if (initializedChannels.has(String(id))) {
@@ -84,25 +109,39 @@ async function startTelegramClient(callbacks) {
             continue;
         }
         try {
-            const msgs = await telegramClient.getMessages(id, { limit: 1 });
-            if (msgs && msgs.length > 0) {
-                // First run only: establish a baseline so old channel history isn't replayed.
-                // On later restarts, resume from the persisted cursor instead of skipping new messages.
-                persistMessageCursor(id, msgs[0].id);
-                log(`[Telegram] Tracking initialized for ID: ${id}, baseline ${msgs[0].id}`);
+            const msgs = await client.getMessages(id, { limit: 1 });
+            const baselineId = msgs && msgs.length > 0 ? msgs[0].id : 0;
+            // Retain the first observed baseline if writing it fails. Never re-query the latest
+            // message and move the cursor forward after a storage error, which could skip alerts.
+            pendingBaselineByChannel.set(String(id), baselineId);
+            persistMessageCursor(id, baselineId);
+            pendingBaselineByChannel.delete(String(id));
+            if (baselineId > 0) {
+                log(`[Telegram] Tracking initialized for ID: ${id}, baseline ${baselineId}`);
             } else {
-                persistMessageCursor(id, 0);
                 log(`[Telegram] No existing messages found for ${id}; will start from first available message.`);
             }
         } catch (err) {
-            // The polling loop will retry initialization for channels that have no saved cursor.
+            if (!initializedChannels.has(String(id)) && !pendingBaselineByChannel.has(String(id))) {
+                // If Telegram was temporarily unavailable before a safe baseline could be read,
+                // start at zero when it recovers and drain history rather than silently skipping it.
+                pendingBaselineByChannel.set(String(id), 0);
+            }
             log(`[Telegram] Could not initialize tracker for ${id}: ${err.message || err}`);
         }
         await sleep(300);
     }
 
-    log("[Telegram] 🔍 Listening for new messages...");
-    void startPolling(callbacks);
+        log("[Telegram] 🔍 Listening for new messages...");
+        startPollingSupervisor(callbacks);
+    } catch (error) {
+        if (telegramClient === client) telegramClient = null;
+        polling = false;
+        try { await client.disconnect(); } catch (disconnectError) {
+            log(`[Telegram] Cleanup after startup failure: ${disconnectError.message || disconnectError}`);
+        }
+        throw error;
+    }
 }
 
 function startPolling(callbacks) {
@@ -117,10 +156,15 @@ function startPolling(callbacks) {
 
                 try {
                     if (!initializedChannels.has(String(id))) {
-                        const baselineMessages = await telegramClient.getMessages(id, { limit: 1 });
-                        const baselineId = baselineMessages && baselineMessages.length ? baselineMessages[0].id : 0;
+                        const channelKey = String(id);
+                        const baselineId = pendingBaselineByChannel.has(channelKey)
+                            ? pendingBaselineByChannel.get(channelKey)
+                            : 0;
+                        // Do not move an uninitialized cursor to "latest" after a failed write/read.
+                        // Cursor zero safely drains the backlog if no trustworthy baseline is available.
                         persistMessageCursor(id, baselineId);
-                        log(`[Telegram] Tracker recovered for ${id}; baseline is ${baselineId}.`);
+                        pendingBaselineByChannel.delete(channelKey);
+                        log(`[Telegram] Tracker recovered for ${id}; cursor initialized at ${baselineId}.`);
                         continue;
                     }
                     const cursor = lastSeenMessageIds[id] || 0;
@@ -157,6 +201,7 @@ function startPolling(callbacks) {
                             // message rather than advancing in-memory state beyond the durable state.
                             persistMessageCursor(id, message.id);
                         } catch (err) {
+                            retryAfterByChannel.set(String(id), Date.now() + 3000);
                             log(`[Telegram] Processing/persistence error for ${id}/${message.id}; cursor not advanced: ${err.message || err}`);
                             break;
                         }
@@ -172,6 +217,7 @@ function startPolling(callbacks) {
             if (polling) await sleep(1000);
         }
     })().catch(err => {
+        polling = false;
         log(`[Telegram] Polling loop stopped unexpectedly: ${err.message || err}`);
     }).finally(() => {
         pollingTask = null;
@@ -179,7 +225,28 @@ function startPolling(callbacks) {
     return pollingTask;
 }
 
+function startPollingSupervisor(callbacks) {
+    if (pollingSupervisorTask || shutdownRequested) return pollingSupervisorTask;
+    pollingSupervisorTask = (async () => {
+        let restartDelayMs = 1000;
+        while (telegramClient && !shutdownRequested) {
+            await startPolling(callbacks);
+            if (!telegramClient || shutdownRequested) break;
+
+            log(`[Telegram] Polling loop exited unexpectedly; restarting in ${restartDelayMs}ms.`);
+            await sleep(restartDelayMs);
+            restartDelayMs = Math.min(restartDelayMs * 2, 30_000);
+        }
+    })().catch(error => {
+        log(`[Telegram] Polling supervisor stopped: ${error.message || error}`);
+    }).finally(() => {
+        pollingSupervisorTask = null;
+    });
+    return pollingSupervisorTask;
+}
+
 async function shutdownTelegram() {
+    shutdownRequested = true;
     polling = false;
     if (telegramClient) {
         try {
