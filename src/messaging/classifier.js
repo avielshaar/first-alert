@@ -220,7 +220,7 @@ async function classifyMessage(channelId, messageText, lastPublished, messageTim
         aiReasoning = "AI identified launch, but no tactical data or keywords found. Overridden.";
     }
 
-    if (aiCategory === "IRRELEVANT" && (target || source) && messageText.length <= 25) {
+    if (aiCategory === "IRRELEVANT" && (target || source) && hasLaunchWord && messageText.length <= 25) {
         aiCategory = "LAUNCH_REPORT";
         aiReasoning = "Overridden by deterministic: Short ping with valid tactical target/source.";
     }
