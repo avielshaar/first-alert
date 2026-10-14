@@ -157,6 +157,72 @@ describe("critical processor regressions", () => {
         expect(retained[0].corroborationPending).toBe(true);
     });
 
+    test("publishes a source-confirmed alert while a region-only follow-up remains unverified, then updates the region when corroborated", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT",
+                reasoning: "source-only launch",
+                source: "איראן",
+                target: "",
+                estimated_time: "",
+                reportedSource: "איראן",
+                reportedTarget: "",
+                reportedEstimatedTime: "",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT",
+                reasoning: "region-only follow-up",
+                source: "",
+                target: "",
+                estimated_time: "",
+            })
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT",
+                reasoning: "independent source confirmation",
+                source: "איראן",
+                target: "",
+                estimated_time: "",
+                reportedSource: "איראן",
+                reportedTarget: "",
+                reportedEstimatedTime: "",
+            })
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT",
+                reasoning: "independent target confirmation",
+                source: "איראן",
+                target: "מרכז",
+                estimated_time: "",
+                reportedSource: "איראן",
+                reportedTarget: "מרכז",
+                reportedEstimatedTime: "",
+            });
+
+        await processMessage("channel-1", "שיגורים מאיראן", callbacks, 801, Date.now());
+        await processMessage("channel-1", "למרכז", callbacks, 802, Date.now());
+        await processMessage("channel-2", "שיגורים מאיראן", callbacks, 901, Date.now());
+
+        // The source has two-channel support. The one-channel region must not block
+        // the initial alert or be published as if it were already verified.
+        expect(callbacks.alert).toHaveBeenCalledTimes(1);
+        expect(callbacks.alert).toHaveBeenCalledWith("איראן", "", "");
+        expect(callbacks.update).not.toHaveBeenCalled();
+        expect(getLastPublished()).toMatchObject({ source: "איראן", target: "" });
+
+        // A later independent report confirms the pending region, so send an update
+        // to the already-published incident rather than another new-alert message.
+        await processMessage("channel-2", "שיגורים מאיראן למרכז", callbacks, 902, Date.now());
+
+        expect(callbacks.alert).toHaveBeenCalledTimes(1);
+        expect(callbacks.update).toHaveBeenCalledTimes(1);
+        expect(callbacks.update.mock.calls[0][0]).toEqual({
+            source: "איראן",
+            target: "מרכז",
+            estimated_time: "",
+        });
+        expect(callbacks.update.mock.calls[0][2]).toBe("target");
+        expect(getLastPublished()).toMatchObject({ source: "איראן", target: "מרכז" });
+    });
+
     test("joins a short region-only follow-up to a unique recent source-only alert", async () => {
         classifyMessage
             .mockResolvedValueOnce({
