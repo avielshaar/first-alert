@@ -73,7 +73,7 @@ first-alert/
 │   ├── utils/logger.js
 │   ├── config.js
 │   └── index.js
-├── tests/                # Classifier, config, state, corroboration, and helper tests
+├── tests/                # Classifier, processor, state, integration-lifecycle, and logger tests
 ├── data/                 # Created at runtime; ignored by Git
 ├── .dockerignore
 ├── .env.example
@@ -105,6 +105,7 @@ WHATSAPP_GROUPS=YourExactWhatsAppGroupName
 WHATSAPP_INVITE_LINK=https://chat.whatsapp.com/your-invite-code
 
 # Optional overrides
+LOG_TIME_ZONE=Asia/Jerusalem
 GEMINI_MODEL=gemini-3.5-flash-lite
 LAST_PUBLISHED_DEDUP_WINDOW_MINUTES=15
 APP_DATA_DIR=./data
