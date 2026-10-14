@@ -768,14 +768,14 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
         return false;
     }
     const messageRef = `channel=${String(channelId)} message=${messageId ?? "n/a"}`;
-    const messagePreview = String(messageText || "").replace(/\\s+/g, " ").slice(0, 100);
+    const messagePreview = String(messageText || "").replace(/\s+/g, " ").slice(0, 100);
     const rawSource = typeof classification.reportedSource === "string"
         ? classification.reportedSource : safelyExtract(extractSource, messageText);
     const rawTarget = typeof classification.reportedTarget === "string"
         ? classification.reportedTarget : safelyExtract(extractTargets, messageText);
     const rawTime = typeof classification.reportedEstimatedTime === "string"
         ? classification.reportedEstimatedTime : safelyExtract(extractTime, messageText, messageTimestamp || now);
-    const reason = String(classification.reasoning || "No reasoning provided").replace(/\\s+/g, " ").slice(0, 240);
+    const reason = String(classification.reasoning || "No reasoning provided").replace(/\s+/g, " ").slice(0, 240);
 
     if (classification.category === "IRRELEVANT") {
         log(`[Classifier] ${messageRef} | category=IRRELEVANT | scope=message-by-itself | text=${JSON.stringify(messagePreview)} | deterministic_fields={source:${JSON.stringify(rawSource || "—")}, target:${JSON.stringify(rawTarget || "—")}, time:${JSON.stringify(rawTime || "—")}} | reason=${JSON.stringify(reason)} | next_step=check-contextual-follow-up`);
