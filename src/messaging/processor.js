@@ -511,6 +511,7 @@ function mergeClassificationIntoEvent(event, classification) {
 async function publishNewAlert(event, callbacks, verifiedFields) {
     let result = false;
     try {
+        log(`[Dispatch] event=${event.id} | action=SEND_NEW_ALERT | verified_fields={source:${JSON.stringify(verifiedFields.source || "—")}, target:${JSON.stringify(verifiedFields.target || "—")}, time:${JSON.stringify(verifiedFields.estimated_time || "—")}} | unverified_fields_are_omitted=true.`);
         result = await callbacks.alert(
             verifiedFields.source || "",
             verifiedFields.target || "",
@@ -539,6 +540,7 @@ async function publishNewAlert(event, callbacks, verifiedFields) {
         verificationVersion: 1,
         publishedAt: Date.now(),
     };
+    log(`[Dispatch] event=${event.id} | outcome=ALERT_DELIVERED | published_baseline={source:${JSON.stringify(lastPublished.source || "—")}, target:${JSON.stringify(lastPublished.target || "—")}, time:${JSON.stringify(lastPublished.estimated_time || "—")}}.`);
     delete event.deliveryPending;
 
     const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
@@ -585,6 +587,7 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
         hasNewTarget && "target",
         hasNewTime && "time",
     ].filter(Boolean).join("+");
+    log(`[Dispatch] event=${event.id} | action=SEND_UPDATE | changed_fields=[${updateType}] | previous={source:${JSON.stringify(lastPublished.source || "—")}, target:${JSON.stringify(lastPublished.target || "—")}, time:${JSON.stringify(lastPublished.estimated_time || "—")}} | proposed_confirmed={source:${JSON.stringify(finalSource || "—")}, target:${JSON.stringify(finalTarget || "—")}, time:${JSON.stringify(finalTime || "—")}}.`);
     let result = false;
     try {
         result = await callbacks.update(
@@ -612,6 +615,7 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
         verificationVersion: 1,
         publishedAt: Date.now(),
     };
+    log(`[Dispatch] event=${event.id} | outcome=UPDATE_DELIVERED | baseline_now={source:${JSON.stringify(finalSource || "—")}, target:${JSON.stringify(finalTarget || "—")}, time:${JSON.stringify(finalTime || "—")}}.`);
     delete event.deliveryPending;
 
     const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
@@ -666,7 +670,14 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
     });
 
     // Never guess when more than one incomplete incident could own this region.
-    if (candidates.length !== 1) return null;
+    if (candidates.length === 0) {
+        log(`[Correlation] channel=${channelId} message=${messageId ?? "n/a"} candidate_region=${JSON.stringify(target)} | action=NOT_ATTACHED | reason=no unique open source-confirmed event within ${Math.round(CONTEXT_WINDOW_MS / 1000)}s; message will not change an incident.`);
+        return null;
+    }
+    if (candidates.length > 1) {
+        log(`[Correlation] channel=${channelId} message=${messageId ?? "n/a"} candidate_region=${JSON.stringify(target)} | action=NOT_ATTACHED | reason=${candidates.length} compatible events; refusing ambiguous correlation | events=${candidates.map(event => event.id).join(",")}.`);
+        return null;
+    }
 
     const event = candidates[0];
     // Telegram may redeliver the same message when its cursor is retried. A duplicate must
@@ -674,7 +685,10 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
     const messageKey = messageId !== undefined && messageId !== null
         ? `${channelId}:${messageId}`
         : `${channelId}:${text}`;
-    if (event.messageKeys.has(messageKey)) return event;
+    if (event.messageKeys.has(messageKey)) {
+        log(`[Correlation] channel=${channelId} message=${messageId ?? "n/a"} | duplicate region follow-up already attached to ${event.id}; ignoring idempotently.`);
+        return event;
+    }
 
     const partialClassification = {
         source: "",
@@ -690,16 +704,25 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
     );
     if (!persistProcessorState()) return false;
 
-    log(`[Events] Attached region-only follow-up "${text}" to ${event.id}; checking whether it completes field corroboration.`);
+    const confirmed = getCorroboratedFields(event);
+    const targetSupport = getTargetVoteMap(getEvidenceMessages(event)).get(target);
+    const regionChannelCount = targetSupport ? targetSupport.size : 0;
+    log(`[Correlation] channel=${channelId} message=${messageId ?? "n/a"} | action=ATTACHED | event=${event.id} | text=${JSON.stringify(text)} | event_channels=${[...event.channels].join(",")} (${event.channels.size}/${MIN_CHANNELS_TO_ACT} required) | region=${JSON.stringify(target)} support=${regionChannelCount}/${MIN_CHANNELS_TO_ACT} independent channels | confirmed_source=${confirmed.source || "—"} | confirmed_target=${confirmed.target || "—"}.`);
     return event;
 }
 
-async function processAttachedRegionFollowUp(event, callbacks) {
-    if (!event || event.deliveryPending) return false;
-    if (event.channels.size < MIN_CHANNELS_TO_ACT) return true;
+async function processAttachedRegionFollowUp(event, callbacks, channelId, messageId) {
+    if (!event || event.deliveryPending) {
+        log(`[Correlation] channel=${channelId} message=${messageId ?? "n/a"} | attachment could not be safely processed; retaining message for retry.`, "WARN");
+        return false;
+    }
 
     const publishedBaseline = getVerifiedLastPublished();
     const evidence = getCorroboratedFields(event);
+    if (event.channels.size < MIN_CHANNELS_TO_ACT) {
+        log(`[Verification] event=${event.id} | attached follow-up recorded, but event-level confirmation is ${event.channels.size}/${MIN_CHANNELS_TO_ACT} channels | confirmed_source=${evidence.source || "—"} | confirmed_target=${evidence.target || "—"} | waiting for another configured channel.`);
+        return true;
+    }
 
     if (!publishedBaseline) {
         if (!evidence.source && !evidence.target) {
@@ -744,17 +767,40 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
         log("[Processor] Classifier returned an invalid result; message will be retried.");
         return false;
     }
-    log(`[Hybrid-AI] Category: ${classification.category} | Reasoning: ${classification.reasoning}`);
+    const messageRef = `channel=${String(channelId)} message=${messageId ?? "n/a"}`;
+    const messagePreview = String(messageText || "").replace(/\\s+/g, " ").slice(0, 100);
+    const rawSource = typeof classification.reportedSource === "string"
+        ? classification.reportedSource : safelyExtract(extractSource, messageText);
+    const rawTarget = typeof classification.reportedTarget === "string"
+        ? classification.reportedTarget : safelyExtract(extractTargets, messageText);
+    const rawTime = typeof classification.reportedEstimatedTime === "string"
+        ? classification.reportedEstimatedTime : safelyExtract(extractTime, messageText, messageTimestamp || now);
+    const reason = String(classification.reasoning || "No reasoning provided").replace(/\\s+/g, " ").slice(0, 240);
+
+    if (classification.category === "IRRELEVANT") {
+        log(`[Classifier] ${messageRef} | category=IRRELEVANT | scope=message-by-itself | text=${JSON.stringify(messagePreview)} | deterministic_fields={source:${JSON.stringify(rawSource || "—")}, target:${JSON.stringify(rawTarget || "—")}, time:${JSON.stringify(rawTime || "—")}} | reason=${JSON.stringify(reason)} | next_step=check-contextual-follow-up`);
+    } else {
+        log(`[Classifier] ${messageRef} | category=${classification.category} | resolved_fields={source:${JSON.stringify(classification.source || "—")}, target:${JSON.stringify(classification.target || "—")}, time:${JSON.stringify(classification.estimated_time || "—")}} | raw_message_evidence={source:${JSON.stringify(rawSource || "—")}, target:${JSON.stringify(rawTarget || "—")}, time:${JSON.stringify(rawTime || "—")}} | text=${JSON.stringify(messagePreview)} | reason=${JSON.stringify(reason)}`);
+    }
 
     // An API outage or malformed AI output is not the same as a valid IRRELEVANT classification.
-    if (classification.category === "PROCESSING_ERROR") return false;
+    if (classification.category === "PROCESSING_ERROR") {
+        log(`[Processor] ${messageRef} | outcome=RETRY | reason=classifier returned PROCESSING_ERROR; Telegram cursor must remain unchanged.`, "WARN");
+        return false;
+    }
     if (classification.category === "IRRELEVANT") {
         const attached = attachRegionOnlyFollowUp(
             channelId, messageText, messageId, messageTimestamp, now
         );
-        if (attached === null) return true;
-        if (attached === false) return false;
-        return processAttachedRegionFollowUp(attached, callbacks);
+        if (attached === null) {
+            log(`[Correlation] ${messageRef} | outcome=NO_CONTEXT_MATCH | action=ACKNOWLEDGE | reason=message was not attached to a unique eligible incident; no event fields changed and no alert will be sent.`);
+            return true;
+        }
+        if (attached === false) {
+            log(`[Correlation] ${messageRef} | outcome=STATE_SAVE_FAILED | action=RETRY | reason=follow-up evidence was not durably saved.`, "WARN");
+            return false;
+        }
+        return processAttachedRegionFollowUp(attached, callbacks, channelId, messageId);
     }
     if (!["LAUNCH_REPORT", "UPDATE_TO_LAST"].includes(classification.category)) {
         log("[Processor] Unknown classifier category; retaining message for retry.");
@@ -766,16 +812,23 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     if (classification.category === "UPDATE_TO_LAST" && !publishedBaseline) return true;
 
     const kind = classification.category;
-    const event = findMatchingEvent(classification, kind) || createEvent(classification, kind, now);
+    const matchedEvent = findMatchingEvent(classification, kind);
+    const event = matchedEvent || createEvent(classification, kind, now);
     mergeClassificationIntoEvent(event, classification);
     addMessageToEvent(event, channelId, messageText, messageId, messageTimestamp, now, classification);
     // Persist pending correlation state before the Telegram cursor is allowed to advance.
-    if (!persistProcessorState()) return false;
-
-    log(`[Events] ${event.id}: ${event.channels.size}/${MIN_CHANNELS_TO_ACT} channels confirmed.`);
-    if (event.channels.size < MIN_CHANNELS_TO_ACT) return true;
+    if (!persistProcessorState()) {
+        log(`[State] event=${event.id} | could not persist newly collected message evidence; Telegram cursor will not advance.`, "ERROR");
+        return false;
+    }
 
     const evidence = getCorroboratedFields(event);
+    const pendingFields = getPendingUncorroboratedFields(event, publishedBaseline);
+    log(`[Correlation] ${messageRef} | action=${matchedEvent ? "MERGE_INTO_EXISTING" : "CREATE_EVENT"} | event=${event.id} | event_kind=${event.kind} | channels=${event.channels.size}/${MIN_CHANNELS_TO_ACT} required [${[...event.channels].join(", ")}] | stored_messages=${event.messages.length} | confirmed_fields={source:${JSON.stringify(evidence.source || "—")}, target:${JSON.stringify(evidence.target || "—")}, time:${JSON.stringify(evidence.estimated_time || "—")}} | pending_field_verification=[${pendingFields.join(", ") || "none"}].`);
+    if (event.channels.size < MIN_CHANNELS_TO_ACT) {
+        log(`[Verification] event=${event.id} | event confirmation=${event.channels.size}/${MIN_CHANNELS_TO_ACT} channels; waiting for ${MIN_CHANNELS_TO_ACT - event.channels.size} additional independent channel(s).`);
+        return true;
+    }
 
     if (!publishedBaseline) {
         // Do not block a corroborated incident just because one optional field (usually
