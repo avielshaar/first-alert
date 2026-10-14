@@ -73,7 +73,7 @@ first-alert/
 │   ├── utils/logger.js
 │   ├── config.js
 │   └── index.js
-├── tests/                # Classifier, config, state, corroboration, and helper tests
+├── tests/                # Classifier, processor, state, integration-lifecycle, and logger tests
 ├── data/                 # Created at runtime; ignored by Git
 ├── .dockerignore
 ├── .env.example
@@ -105,6 +105,7 @@ WHATSAPP_GROUPS=YourExactWhatsAppGroupName
 WHATSAPP_INVITE_LINK=https://chat.whatsapp.com/your-invite-code
 
 # Optional overrides
+LOG_TIME_ZONE=Asia/Jerusalem
 GEMINI_MODEL=gemini-3.5-flash-lite
 LAST_PUBLISHED_DEDUP_WINDOW_MINUTES=15
 APP_DATA_DIR=./data
@@ -140,10 +141,31 @@ The WhatsApp account must already have access to the target group. Exactly one g
 | `FIRST_ALERT_STATE_FILE` | `./data/processor-state.json` | Pending events and previous-publication state. |
 | `TELEGRAM_SESSION_FILE` | `<APP_DATA_DIR>/telegram_session` | Telegram session file; overrides the base directory. |
 | `WHATSAPP_AUTH_PATH` | `<APP_DATA_DIR>/wwebjs_auth` | WhatsApp LocalAuth directory; overrides the base directory. |
+| `LOG_TIME_ZONE` | `Asia/Jerusalem` | Timezone used for log timestamps; use a valid IANA timezone such as `UTC`. |
 
 **Changing `APP_DATA_DIR` alone does not move the cursor or processor state files.** Set their path overrides too if relocating all runtime state. Mount every custom persistence location when running in Docker.
 
 The two-minute context window and the two-channel publication threshold are code constants, not supported environment settings. Legacy publication state without `verificationVersion: 1` is not reused as verified evidence.
+
+## Logging and troubleshooting
+
+Every application log line uses one consistent format:
+
+```text
+[YYYY-MM-DD HH:mm:ss] [LEVEL] [Subsystem] message and diagnostic fields
+```
+
+Timestamps use `LOG_TIME_ZONE` (default: `Asia/Jerusalem`). Levels are `INFO` for normal flow, `WARN` for retries or waiting for more evidence, and `ERROR` for failed operations. Third-party `dotenv` startup tips are suppressed so they do not obscure application logs.
+
+Useful fields and transitions:
+
+- `[Telegram] Received message` records the channel, message ID, original Telegram timestamp, and cursor before processing. `[Telegram] Cursor persisted` confirms the new cursor was saved; if processing fails, the cursor stays put and the message is retried.
+- `[Classifier] ... category=IRRELEVANT | scope=message-by-itself` means only that the message is not actionable by itself. `next_step=check-contextual-follow-up` means the processor will still check whether it belongs to an open incident.
+- `[Correlation]` records whether a message created an event, merged into an existing event, or was attached as a region-only follow-up. It includes event ID, independent channel count, confirmed fields, and fields still awaiting confirmation.
+- `[Dispatch] action=SEND_NEW_ALERT` or `action=SEND_UPDATE` marks the delivery attempt. `[WhatsApp][Delivery]` records the destination and the fields included, and `[Dispatch] outcome=ALERT_DELIVERED` or `UPDATE_DELIVERED` records the processor's successful delivery transition.
+- A region-only message that cannot be matched uniquely is not guessed onto an event; the `[Correlation]` line explains why it was not attached.
+
+The log output includes message previews for classification diagnostics, but never prints Telegram/Gemini credentials. When sharing logs publicly, still review message text and group names for sensitive information.
 
 ## Run locally
 

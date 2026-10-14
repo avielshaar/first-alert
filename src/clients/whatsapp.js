@@ -96,11 +96,12 @@ async function startTelegramWithRecovery(client, callbacks) {
     }
 }
 
-function scheduleGroupResolutionRetry(client, callbacks) {
+function scheduleGroupResolutionRetry(client, callbacks, reason = "destination group not yet resolved") {
     if (isShuttingDown || whatsappClient !== client || whatsappGroupChat || groupResolutionTimer) return;
 
     // WhatsApp can report READY before all chats have synchronized. Retry lookup on the
     // existing session instead of staying connected forever with no destination selected.
+    log(`[WhatsApp] Destination-group lookup retry scheduled | group=${JSON.stringify(TARGET_WHATSAPP_GROUP)} | retry_in_ms=60000 | reason=${reason}`, "WARN");
     groupResolutionTimer = setTimeout(async () => {
         groupResolutionTimer = null;
         if (isShuttingDown || whatsappClient !== client || whatsappGroupChat) return;
@@ -117,16 +118,16 @@ function scheduleGroupResolutionRetry(client, callbacks) {
                 const status = matches.length > 1
                     ? "still ambiguous (" + matches.length + " exact matches)"
                     : "still not found";
-                log("[WhatsApp] Target group " + status + " on retry: " + TARGET_WHATSAPP_GROUP);
-                scheduleGroupResolutionRetry(client, callbacks);
+                log("[WhatsApp] Destination-group lookup unresolved on retry | status=" + status + " | group=" + JSON.stringify(TARGET_WHATSAPP_GROUP), "WARN");
+                scheduleGroupResolutionRetry(client, callbacks, status);
                 return;
             }
 
             log("[WhatsApp] Target group located after retry: " + whatsappGroupChat.name);
             void startTelegramWithRecovery(client, callbacks);
         } catch (err) {
-            log("[WhatsApp] Target group retry failed: " + (err.message || err));
-            scheduleGroupResolutionRetry(client, callbacks);
+            log("[WhatsApp] Destination-group retry failed | error=" + (err && err.stack ? err.stack : String(err)), "ERROR");
+            scheduleGroupResolutionRetry(client, callbacks, "chat list retry failed");
         }
     }, 60_000);
 }
@@ -188,11 +189,12 @@ function initializeWhatsApp(callbacks) {
     client.on("ready", async () => {
         if (whatsappClient !== client || isShuttingDown) return;
         isReconnecting = false;
-        log("[WhatsApp] Connected and ready!");
+        log("[WhatsApp] Session ready; loading chat list and resolving the exact destination group.");
 
         try {
             const chats = await client.getChats();
             if (whatsappClient !== client || isShuttingDown) return;
+            log(`[WhatsApp] Chat list loaded | chats_total=${Array.isArray(chats) ? chats.length : "unknown"} | destination_group=${JSON.stringify(TARGET_WHATSAPP_GROUP)} | action=resolve-exact-match`);
 
             whatsappGroupChat = findUniqueTargetGroup(chats, TARGET_WHATSAPP_GROUP);
             if (!whatsappGroupChat) {
@@ -202,8 +204,8 @@ function initializeWhatsApp(callbacks) {
                 const status = matches.length > 1
                     ? "ambiguous (" + matches.length + " exact matches)"
                     : "not found";
-                log("[WhatsApp] Target group " + status + ": " + TARGET_WHATSAPP_GROUP);
-                scheduleGroupResolutionRetry(client, callbacks);
+                log("[WhatsApp] Destination-group lookup unresolved | status=" + status + " | group=" + JSON.stringify(TARGET_WHATSAPP_GROUP), "WARN");
+                scheduleGroupResolutionRetry(client, callbacks, status);
                 return;
             }
 
@@ -211,11 +213,11 @@ function initializeWhatsApp(callbacks) {
                 clearTimeout(groupResolutionTimer);
                 groupResolutionTimer = null;
             }
-            log("[WhatsApp] Target group located: " + whatsappGroupChat.name);
+            log(`[WhatsApp] Destination group resolved | group=${JSON.stringify(whatsappGroupChat.name)} | chat_id=${whatsappGroupChat.id && whatsappGroupChat.id._serialized ? whatsappGroupChat.id._serialized : "unknown"} | action=start-Telegram`);
             void startTelegramWithRecovery(client, callbacks);
         } catch (err) {
-            log("[WhatsApp] Error fetching chats: " + (err && err.stack ? err.stack : String(err)));
-            scheduleGroupResolutionRetry(client, callbacks);
+            log("[WhatsApp] Chat-list retrieval failed while resolving destination group | " + (err && err.stack ? err.stack : String(err)), "ERROR");
+            scheduleGroupResolutionRetry(client, callbacks, "client.getChats() failed");
         }
     });
 
@@ -298,10 +300,10 @@ async function sendAlert(source, target, estimated_time) {
 
     try {
         await whatsappGroupChat.sendMessage(alertMsg);
-        log("[WhatsApp] Alert sent successfully!");
+        log(`[WhatsApp][Delivery] New alert sent | group=${JSON.stringify(whatsappGroupChat.name)} | source=${JSON.stringify(source || "UNVERIFIED")} | target=${JSON.stringify(target || "UNVERIFIED")} | estimated_time=${JSON.stringify(estimated_time || "UNKNOWN")} | message_chars=${alertMsg.length}`);
         return { source, target, estimated_time, publishedAt: Date.now() };
     } catch (err) {
-        log("[WhatsApp] Failed to send alert: " + err);
+        log(`[WhatsApp][Delivery] New alert failed | group=${JSON.stringify(whatsappGroupChat && whatsappGroupChat.name || "unavailable")} | source=${JSON.stringify(source || "UNVERIFIED")} | target=${JSON.stringify(target || "UNVERIFIED")} | error=${err && err.stack ? err.stack : String(err)}`, "ERROR");
         return null;
     }
 }
@@ -331,15 +333,16 @@ async function sendUpdate(updatedFields, prevPublished, updateType) {
 
     try {
         await whatsappGroupChat.sendMessage(alertMsg);
-        log("[WhatsApp] Update sent successfully!");
-        return {
-            source: updatedFields.source || prevPublished.source,
-            target: updatedFields.target || prevPublished.target,
-            estimated_time: updatedFields.estimated_time || prevPublished.estimated_time,
+        const resultingFields = {
+            source: updatedFields.source || prevPublished.source || "",
+            target: updatedFields.target || prevPublished.target || "",
+            estimated_time: updatedFields.estimated_time || prevPublished.estimated_time || "",
             publishedAt: Date.now(),
         };
+        log(`[WhatsApp][Delivery] Update sent | group=${JSON.stringify(whatsappGroupChat.name)} | update_type=${updateType} | changed_fields={source:${JSON.stringify(updatedFields.source && updatedFields.source !== prevPublished.source ? updatedFields.source : "unchanged")}, target:${JSON.stringify(updatedFields.target && updatedFields.target !== prevPublished.target ? updatedFields.target : "unchanged")}, estimated_time:${JSON.stringify(updatedFields.estimated_time && updatedFields.estimated_time !== prevPublished.estimated_time ? updatedFields.estimated_time : "unchanged")}} | resulting_fields={source:${JSON.stringify(resultingFields.source || "UNVERIFIED")}, target:${JSON.stringify(resultingFields.target || "UNVERIFIED")}, estimated_time:${JSON.stringify(resultingFields.estimated_time || "UNKNOWN")}} | message_chars=${alertMsg.length}`);
+        return resultingFields;
     } catch (err) {
-        log("[WhatsApp] Failed to send update: " + err);
+        log(`[WhatsApp][Delivery] Update failed | group=${JSON.stringify(whatsappGroupChat && whatsappGroupChat.name || "unavailable")} | update_type=${updateType} | error=${err && err.stack ? err.stack : String(err)}`, "ERROR");
         return null;
     }
 }

@@ -67,7 +67,7 @@ async function callAIWithRetry(prompt, maxRetries = 3) {
             if (!retryable || attempt === maxRetries) throw error;
 
             const delayMs = Math.min(1000 * (2 ** (attempt - 1)), 8000) + Math.floor(Math.random() * 250);
-            log(`[AI] ⚠️ Temporary API failure; retry ${attempt}/${maxRetries} in ${delayMs}ms.`);
+            log(`[AI] Temporary API failure | model=${GEMINI_MODEL} | attempt=${attempt}/${maxRetries} | retry_in_ms=${delayMs} | status=${status || "unknown"} | error=${message}`, "WARN");
             await new Promise(resolve => setTimeout(resolve, delayMs));
         }
     }
@@ -210,7 +210,7 @@ async function classifyMessage(channelId, messageText, lastPublished, messageTim
         aiReasoning = parsed.reasoning;
     } catch (err) {
         const message = String(err && err.message ? err.message : err);
-        log("[AI] Classification unavailable; message must be retried: " + message);
+        log(`[AI] Classification failed | channel=${channelId} | message_chars=${String(messageText || "").length} | model=${GEMINI_MODEL} | action=return-PROCESSING_ERROR-so-Telegram-retries | error=${message}`, "WARN");
         return {
             category: "PROCESSING_ERROR",
             reasoning: "AI classification failed; not treating the message as irrelevant.",
