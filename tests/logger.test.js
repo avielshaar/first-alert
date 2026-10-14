@@ -7,7 +7,7 @@ describe("centralized logger", () => {
 
     test("formats timestamps with date and time in the configured timezone", () => {
         expect(formatTimestamp(new Date("2026-10-14T10:32:51.000Z")))
-            .toMatch(/^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/);
+            .toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
     });
 
     test("infers useful severity levels for operational outcomes", () => {
@@ -24,11 +24,11 @@ describe("centralized logger", () => {
 
         expect(output).toHaveBeenNthCalledWith(
             1,
-            expect.stringMatching(/^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\] \\[INFO\\] \\[Correlation\\] event=event-1 action=CREATE_EVENT$/)
+            expect.stringMatching(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[INFO\] \[Correlation\] event=event-1 action=CREATE_EVENT$/)
         );
         expect(output).toHaveBeenNthCalledWith(
             2,
-            expect.stringMatching(/^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\] \\[ERROR\\] \\[Dispatch\\] Delivery failed\\.$/)
+            expect.stringMatching(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[ERROR\] \[Dispatch\] Delivery failed\.$/)
         );
     });
 });
