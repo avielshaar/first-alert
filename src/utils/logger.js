@@ -29,7 +29,7 @@ function inferLevel(message) {
     const text = String(message || "");
     if (/\b(error|failed|failure|exception|aborted|invalid|refusing)\b|could not|cannot|❌/i.test(text)) {
         return "ERROR";
-    }
+    if (/waiting for|\bretry(ing)?\b|\bambiguous\b|\bunverified\b|not found|not advanced|not confirmed|requires independent confirmation/i.test(text)) {
     if (/\b(waiting|pending|retry|retrying|ambiguous|unverified|expired|warning)\b|not found|not advanced|not confirmed/i.test(text)) {
         return "WARN";
     }
