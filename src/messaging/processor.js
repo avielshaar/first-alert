@@ -726,13 +726,17 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     const evidence = getCorroboratedFields(event);
 
     if (!publishedBaseline) {
-        if (!evidence.target) {
+        // Do not block a corroborated incident just because one optional field (usually
+        // the target region) has only one channel's support. Publish only independently
+        // corroborated source/target fields; unverified fields remain blank and may be
+        // added later when another channel confirms them.
+        if (!evidence.source && !evidence.target) {
             const pendingFields = getPendingUncorroboratedFields(event, null);
-            log(`[Verification] ${event.id} waiting for 2-channel target confirmation before publishing` +
+            log(`[Verification] ${event.id} waiting for at least one actionable field (source or target) to be corroborated before publishing` +
                 (pendingFields.length ? ` (pending: ${pendingFields.join(", ")}).` : "."));
             return true;
         }
-        log(`[Publish] Corroborated new incident: ${evidence.source || "unverified source"} -> ${evidence.target}`);
+        log(`[Publish] Corroborated new incident: ${evidence.source || "unverified source"} -> ${evidence.target || "unverified target"}`);
         return publishNewAlert(event, callbacks, evidence);
     }
 
