@@ -96,11 +96,12 @@ async function startTelegramWithRecovery(client, callbacks) {
     }
 }
 
-function scheduleGroupResolutionRetry(client, callbacks) {
+function scheduleGroupResolutionRetry(client, callbacks, reason = "destination group not yet resolved") {
     if (isShuttingDown || whatsappClient !== client || whatsappGroupChat || groupResolutionTimer) return;
 
     // WhatsApp can report READY before all chats have synchronized. Retry lookup on the
     // existing session instead of staying connected forever with no destination selected.
+    log(`[WhatsApp] Destination-group lookup retry scheduled | group=${JSON.stringify(TARGET_WHATSAPP_GROUP)} | retry_in_ms=60000 | reason=${reason}`, "WARN");
     groupResolutionTimer = setTimeout(async () => {
         groupResolutionTimer = null;
         if (isShuttingDown || whatsappClient !== client || whatsappGroupChat) return;
@@ -117,16 +118,16 @@ function scheduleGroupResolutionRetry(client, callbacks) {
                 const status = matches.length > 1
                     ? "still ambiguous (" + matches.length + " exact matches)"
                     : "still not found";
-                log("[WhatsApp] Target group " + status + " on retry: " + TARGET_WHATSAPP_GROUP);
-                scheduleGroupResolutionRetry(client, callbacks);
+                log("[WhatsApp] Destination-group lookup unresolved on retry | status=" + status + " | group=" + JSON.stringify(TARGET_WHATSAPP_GROUP), "WARN");
+                scheduleGroupResolutionRetry(client, callbacks, status);
                 return;
             }
 
             log("[WhatsApp] Target group located after retry: " + whatsappGroupChat.name);
             void startTelegramWithRecovery(client, callbacks);
         } catch (err) {
-            log("[WhatsApp] Target group retry failed: " + (err.message || err));
-            scheduleGroupResolutionRetry(client, callbacks);
+            log("[WhatsApp] Destination-group retry failed | error=" + (err && err.stack ? err.stack : String(err)), "ERROR");
+            scheduleGroupResolutionRetry(client, callbacks, "chat list retry failed");
         }
     }, 60_000);
 }
@@ -203,8 +204,8 @@ function initializeWhatsApp(callbacks) {
                 const status = matches.length > 1
                     ? "ambiguous (" + matches.length + " exact matches)"
                     : "not found";
-                log("[WhatsApp] Target group " + status + ": " + TARGET_WHATSAPP_GROUP);
-                scheduleGroupResolutionRetry(client, callbacks);
+                log("[WhatsApp] Destination-group lookup unresolved | status=" + status + " | group=" + JSON.stringify(TARGET_WHATSAPP_GROUP), "WARN");
+                scheduleGroupResolutionRetry(client, callbacks, status);
                 return;
             }
 
@@ -215,8 +216,8 @@ function initializeWhatsApp(callbacks) {
             log(`[WhatsApp] Destination group resolved | group=${JSON.stringify(whatsappGroupChat.name)} | chat_id=${whatsappGroupChat.id && whatsappGroupChat.id._serialized ? whatsappGroupChat.id._serialized : "unknown"} | action=start-Telegram`);
             void startTelegramWithRecovery(client, callbacks);
         } catch (err) {
-            log("[WhatsApp] Error fetching chats: " + (err && err.stack ? err.stack : String(err)));
-            scheduleGroupResolutionRetry(client, callbacks);
+            log("[WhatsApp] Chat-list retrieval failed while resolving destination group | " + (err && err.stack ? err.stack : String(err)), "ERROR");
+            scheduleGroupResolutionRetry(client, callbacks, "client.getChats() failed");
         }
     });
 
