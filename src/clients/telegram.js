@@ -179,8 +179,12 @@ function startPolling(callbacks) {
                         if (!message || !message.id || message.id <= previousId) continue;
 
                         try {
-                            if (typeof message.message === "string" && message.message.trim()) {
-                                log(`[Telegram] New message | Channel: ${id} | Message ID: ${message.id}`);
+                            const hasText = typeof message.message === "string" && message.message.trim().length > 0;
+                            if (hasText) {
+                                const telegramSentAt = message.date
+                                    ? new Date(Number(message.date) * 1000).toISOString()
+                                    : "unknown";
+                                log(`[Telegram] Received message | channel=${id} | message_id=${message.id} | sent_at=${telegramSentAt} | cursor_before=${previousId}`);
                                 const processed = await processMessage(
                                     id,
                                     message.message,
@@ -190,16 +194,17 @@ function startPolling(callbacks) {
                                 );
                                 if (processed === false) {
                                     retryAfterByChannel.set(String(id), Date.now() + 3000);
-                                    log(`[Telegram] Processing failed for ${id}/${message.id}; cursor not advanced, retrying this channel after a short backoff.`);
+                                    log(`[Telegram] Processing not committed | channel=${id} | message_id=${message.id} | cursor_remains=${previousId} | retry_after_ms=3000; the same message will be retried.`, "WARN");
                                     break;
                                 }
                                 retryAfterByChannel.delete(String(id));
+                            } else {
+                                log(`[Telegram] Non-text/empty message | channel=${id} | message_id=${message.id} | action=skip-content-and-advance-cursor`);
                             }
-                            // Empty/non-text messages are intentionally skipped, but acknowledged so they
-                            // do not block every later message forever.
                             // Persist before proceeding. If writing the cursor fails, retry this
                             // message rather than advancing in-memory state beyond the durable state.
                             persistMessageCursor(id, message.id);
+                            log(`[Telegram] Cursor persisted | channel=${id} | previous=${previousId} | current=${message.id} | outcome=${hasText ? "message-processed" : "non-text-message-acknowledged"}`);
                         } catch (err) {
                             retryAfterByChannel.set(String(id), Date.now() + 3000);
                             log(`[Telegram] Processing/persistence error for ${id}/${message.id}; cursor not advanced: ${err.message || err}`);
