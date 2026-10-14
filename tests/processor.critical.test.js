@@ -6,7 +6,7 @@ jest.mock("../src/messaging/classifier", () => ({
     classifyMessage: jest.fn(),
     checkForNewInfo: jest.fn(),
     extractSource: jest.fn(text => /איראן/.test(text) ? "איראן" : /לבנון/.test(text) ? "לבנון" : ""),
-    extractTargets: jest.fn(text => /מרכז|גוש דן|תל אביב/.test(text) ? "מרכז" : /צפון/.test(text) ? "צפון" : ""),
+    extractTargets: jest.fn(text => /מרכז|גוש דן|תל אביב/.test(text) ? "מרכז" : /דרום/.test(text) ? "דרום" : /צפון/.test(text) ? "צפון" : ""),
     extractTime: jest.fn(text => (String(text).match(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/) || [])[0] || ""),
 }));
 const { classifyMessage, checkForNewInfo } = require("../src/messaging/classifier");
@@ -268,6 +268,66 @@ describe("critical processor regressions", () => {
         expect(callbacks.alert).toHaveBeenCalledTimes(1);
         expect(callbacks.alert).toHaveBeenCalledWith("איראן", "מרכז", "");
         expect(getLastPublished()).toMatchObject({ source: "איראן", target: "מרכז" });
+    });
+
+    test("publishes a pending region update when a second channel confirms it using a region-only message after the initial alert", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT",
+                reasoning: "source-only launch",
+                source: "איראן",
+                target: "",
+                estimated_time: "",
+                reportedSource: "איראן",
+                reportedTarget: "",
+                reportedEstimatedTime: "",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT",
+                reasoning: "region-only follow-up",
+                source: "",
+                target: "",
+                estimated_time: "",
+            })
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT",
+                reasoning: "independent source confirmation",
+                source: "איראן",
+                target: "",
+                estimated_time: "",
+                reportedSource: "איראן",
+                reportedTarget: "",
+                reportedEstimatedTime: "",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT",
+                reasoning: "independent region-only confirmation",
+                source: "",
+                target: "",
+                estimated_time: "",
+            });
+
+        await processMessage("channel-1", "שיגורים מאיראן", callbacks, 1001, Date.now());
+        await processMessage("channel-1", "לדרום", callbacks, 1002, Date.now());
+        await processMessage("channel-2", "שיגורים מאיראן", callbacks, 1101, Date.now());
+
+        expect(callbacks.alert).toHaveBeenCalledTimes(1);
+        expect(callbacks.alert).toHaveBeenCalledWith("איראן", "", "");
+        expect(callbacks.update).not.toHaveBeenCalled();
+
+        // A region-only message from the second channel is valid corroborating evidence.
+        // It must be attached to the already-published incident and trigger an update.
+        await processMessage("channel-2", "לדרום", callbacks, 1102, Date.now());
+
+        expect(callbacks.alert).toHaveBeenCalledTimes(1);
+        expect(callbacks.update).toHaveBeenCalledTimes(1);
+        expect(callbacks.update.mock.calls[0][0]).toEqual({
+            source: "איראן",
+            target: "דרום",
+            estimated_time: "",
+        });
+        expect(callbacks.update.mock.calls[0][2]).toBe("target");
+        expect(getLastPublished()).toMatchObject({ source: "איראן", target: "דרום" });
     });
 
     test("does not attach a region-only follow-up when multiple source-only incidents are candidates", async () => {
