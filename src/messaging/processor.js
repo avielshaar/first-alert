@@ -635,13 +635,35 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
     const estimatedTime = safelyExtract(extractTime, text, messageTimestamp || now);
     if (source || !target || estimatedTime) return null;
 
-    const candidates = Object.values(activeEvents).filter(event =>
-        event.kind === "LAUNCH_REPORT" &&
-        !event.deliveryPending &&
-        Boolean(event.source) &&
-        !event.target &&
-        now - event.lastSeen <= CONTEXT_WINDOW_MS
-    );
+    const published = getVerifiedLastPublished();
+    const candidates = Object.values(activeEvents).filter(event => {
+        if (
+            event.deliveryPending ||
+            !event.source ||
+            now - event.lastSeen > CONTEXT_WINDOW_MS
+        ) return false;
+
+        // Before initial publication, a region-only follow-up can complete a source-only
+        // launch event. After publication, keep accepting independent region-only evidence
+        // while this same event is still open for corroboration.
+        const incompleteLaunch = event.kind === "LAUNCH_REPORT" && !event.target;
+        const pendingPublishedEvent = event.kind === "UPDATE_TO_LAST" &&
+            event.corroborationPending &&
+            (!event.target || splitTargets(event.target).some(existing => targetsOverlap(existing, target)));
+
+        if (!incompleteLaunch && !pendingPublishedEvent) return false;
+
+        // A region that is already independently corroborated or already present in the
+        // published baseline needs no new attachment.
+        const corroboratedTargets = splitTargets(getCorroboratedFields(event).target);
+        const publishedTargets = splitTargets(published && published.target);
+        if (
+            corroboratedTargets.some(existing => targetsOverlap(existing, target)) ||
+            publishedTargets.some(existing => targetsOverlap(existing, target))
+        ) return false;
+
+        return true;
+    });
 
     // Never guess when more than one incomplete incident could own this region.
     if (candidates.length !== 1) return null;
@@ -652,7 +674,7 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
     const messageKey = messageId !== undefined && messageId !== null
         ? `${channelId}:${messageId}`
         : `${channelId}:${text}`;
-    if (event.messageKeys.has(messageKey)) return true;
+    if (event.messageKeys.has(messageKey)) return event;
 
     const partialClassification = {
         source: "",
@@ -668,8 +690,36 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
     );
     if (!persistProcessorState()) return false;
 
-    log(`[Events] Attached region-only follow-up "${text}" to ${event.id}; waiting for independent confirmation.`);
-    return true;
+    log(`[Events] Attached region-only follow-up "${text}" to ${event.id}; checking whether it completes field corroboration.`);
+    return event;
+}
+
+async function processAttachedRegionFollowUp(event, callbacks) {
+    if (!event || event.deliveryPending) return false;
+    if (event.channels.size < MIN_CHANNELS_TO_ACT) return true;
+
+    const publishedBaseline = getVerifiedLastPublished();
+    const evidence = getCorroboratedFields(event);
+
+    if (!publishedBaseline) {
+        if (!evidence.source && !evidence.target) {
+            log(`[Verification] ${event.id} still lacks an independently corroborated source or target.`);
+            return true;
+        }
+        log(`[Publish] Corroborated new incident from attached follow-up: ${evidence.source || "unverified source"} -> ${evidence.target || "unverified target"}`);
+        return publishNewAlert(event, callbacks, evidence);
+    }
+
+    if (isDifferentIncident(evidence, publishedBaseline)) {
+        if (!evidence.source && !evidence.target) {
+            log(`[Verification] ${event.id} still lacks an independently corroborated source or target.`);
+            return true;
+        }
+        log(`[Publish] Corroborated new incident from attached follow-up: ${evidence.source || "unverified source"} -> ${evidence.target || "unverified target"}`);
+        return publishNewAlert(event, callbacks, evidence);
+    }
+
+    return publishUpdate(event, callbacks, evidence);
 }
 
 async function processMessage(channelId, messageText, callbacks, messageId = null, messageTimestamp = null) {
@@ -702,7 +752,9 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
         const attached = attachRegionOnlyFollowUp(
             channelId, messageText, messageId, messageTimestamp, now
         );
-        return attached === null ? true : attached;
+        if (attached === null) return true;
+        if (attached === false) return false;
+        return processAttachedRegionFollowUp(attached, callbacks);
     }
     if (!["LAUNCH_REPORT", "UPDATE_TO_LAST"].includes(classification.category)) {
         log("[Processor] Unknown classifier category; retaining message for retry.");
