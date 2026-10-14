@@ -13,7 +13,7 @@
  * - WHATSAPP_GROUPS: Name of WhatsApp group to receive alerts
  */
 
-require("dotenv").config();
+require("dotenv").config({ quiet: true });
 
 // Telegram credentials for user account client authentication
 const TELEGRAM_API_ID       = Number.parseInt(process.env.TELEGRAM_API_ID, 10);
