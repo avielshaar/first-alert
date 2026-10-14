@@ -1,11 +1,10 @@
 /**
  * Centralized application logger.
  *
- * Keeps a single, grep-friendly log format across local runs and Docker:
+ * All application output uses a date, local Israel time, a severity, and the module tag:
  *   YYYY-MM-DD HH:mm:ss [LEVEL] [Module] message
  *
- * Existing log(message) calls remain supported. Severity is inferred conservatively
- * from the message, and callers can pass an explicit level when needed.
+ * Existing log(message) calls remain supported.
  */
 
 const LOG_TIME_ZONE = process.env.LOG_TIME_ZONE || "Asia/Jerusalem";
@@ -22,15 +21,16 @@ function formatTimestamp(date = new Date()) {
         hourCycle: "h23",
     }).formatToParts(date);
     const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
-    return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
+    return values.year + "-" + values.month + "-" + values.day + " " +
+        values.hour + ":" + values.minute + ":" + values.second;
 }
 
 function inferLevel(message) {
     const text = String(message || "");
-    if (/\b(error|failed|failure|exception|aborted|invalid|refusing)\b|could not|cannot|❌/i.test(text)) {
+    if (/\b(error|failed|failure|exception|aborted|refusing)\b|could not|cannot|❌/i.test(text)) {
         return "ERROR";
+    }
     if (/waiting for|\bretry(ing)?\b|\bambiguous\b|\bunverified\b|not found|not advanced|not confirmed|requires independent confirmation/i.test(text)) {
-    if (/\b(waiting|pending|retry|retrying|ambiguous|unverified|expired|warning)\b|not found|not advanced|not confirmed/i.test(text)) {
         return "WARN";
     }
     return "INFO";
@@ -44,7 +44,7 @@ function inferLevel(message) {
 function log(message, level) {
     const safeMessage = typeof message === "string" ? message : String(message);
     const severity = level || inferLevel(safeMessage);
-    console.log(`[${formatTimestamp()}] [${severity}] ${safeMessage}`);
+    console.log("[" + formatTimestamp() + "] [" + severity + "] " + safeMessage);
 }
 
 module.exports = { log, formatTimestamp, inferLevel };
