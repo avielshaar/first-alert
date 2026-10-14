@@ -306,12 +306,18 @@ describe("critical processor regressions", () => {
 
         await processMessage("channel-1", "שיגורים מאיראן", callbacks, 831, Date.now());
         await processMessage("channel-2", "מרכז", callbacks, 832, Date.now());
+
+        const eventBeforeRetry = Object.values(getActiveEvents())[0];
+        const lastSeenBeforeRetry = eventBeforeRetry.lastSeen;
+        const targetBeforeRetry = eventBeforeRetry.target;
         await processMessage("channel-2", "מרכז", callbacks, 832, Date.now());
 
         const events = Object.values(getActiveEvents());
         expect(events).toHaveLength(1);
         expect(events[0].messages.filter(message => message.messageId === 832)).toHaveLength(1);
         expect(events[0].channels.size).toBe(2);
+        expect(events[0].lastSeen).toBe(lastSeenBeforeRetry);
+        expect(events[0].target).toBe(targetBeforeRetry);
         expect(callbacks.alert).not.toHaveBeenCalled();
     });
 
