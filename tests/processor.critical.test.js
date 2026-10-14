@@ -7,7 +7,7 @@ jest.mock("../src/messaging/classifier", () => ({
     checkForNewInfo: jest.fn(),
     extractSource: jest.fn(text => /איראן/.test(text) ? "איראן" : /לבנון/.test(text) ? "לבנון" : ""),
     extractTargets: jest.fn(text => /מרכז|גוש דן|תל אביב/.test(text) ? "מרכז" : /צפון/.test(text) ? "צפון" : ""),
-    extractTime: jest.fn(() => ""),
+    extractTime: jest.fn(text => (String(text).match(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/) || [])[0] || ""),
 }));
 const { classifyMessage, checkForNewInfo } = require("../src/messaging/classifier");
 const {
@@ -225,6 +225,105 @@ describe("critical processor regressions", () => {
 
         expect(Object.values(getActiveEvents())).toHaveLength(2);
         expect(Object.values(getActiveEvents()).every(event => event.target === "")).toBe(true);
+        expect(callbacks.alert).not.toHaveBeenCalled();
+    });
+
+    test("does not attach a region follow-up that contains a time and may describe another incident", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT", source: "איראן", target: "",
+                estimated_time: "", reasoning: "source-only report",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT", source: "", target: "",
+                estimated_time: "", reasoning: "time-bearing fragment",
+            });
+
+        await processMessage("channel-1", "שיגורים מאיראן", callbacks, 801, Date.now());
+        await processMessage("channel-2", "מרכז 10:30", callbacks, 802, Date.now());
+
+        const events = Object.values(getActiveEvents());
+        expect(events).toHaveLength(1);
+        expect(events[0].target).toBe("");
+        expect(events[0].messages).toHaveLength(1);
+        expect(callbacks.alert).not.toHaveBeenCalled();
+    });
+
+    test("does not attach a region follow-up to a stale source-only event", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT", source: "איראן", target: "",
+                estimated_time: "", reasoning: "source-only report",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT", source: "", target: "",
+                estimated_time: "", reasoning: "orphan region",
+            });
+
+        await processMessage("channel-1", "שיגורים מאיראן", callbacks, 811, Date.now());
+        Object.values(getActiveEvents())[0].lastSeen = Date.now() - 10 * 60 * 1000;
+        await processMessage("channel-2", "מרכז", callbacks, 812, Date.now());
+
+        expect(Object.values(getActiveEvents())).toHaveLength(0);
+        expect(callbacks.alert).not.toHaveBeenCalled();
+    });
+
+    test("does not attach a region follow-up when the candidate already has a target", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT", source: "איראן", target: "צפון",
+                estimated_time: "", reasoning: "complete report",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT", source: "", target: "",
+                estimated_time: "", reasoning: "different region fragment",
+            });
+
+        await processMessage("channel-1", "שיגורים מאיראן לצפון", callbacks, 821, Date.now());
+        await processMessage("channel-2", "מרכז", callbacks, 822, Date.now());
+
+        const events = Object.values(getActiveEvents());
+        expect(events).toHaveLength(1);
+        expect(events[0].target).toBe("צפון");
+        expect(events[0].messages).toHaveLength(1);
+        expect(callbacks.alert).not.toHaveBeenCalled();
+    });
+
+    test("does not add duplicate region-fragment evidence when Telegram retries the same message ID", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT", source: "איראן", target: "",
+                estimated_time: "", reasoning: "source-only report",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT", source: "", target: "",
+                estimated_time: "", reasoning: "region-only fragment",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT", source: "", target: "",
+                estimated_time: "", reasoning: "duplicate delivery",
+            });
+
+        await processMessage("channel-1", "שיגורים מאיראן", callbacks, 831, Date.now());
+        await processMessage("channel-2", "מרכז", callbacks, 832, Date.now());
+        await processMessage("channel-2", "מרכז", callbacks, 832, Date.now());
+
+        const events = Object.values(getActiveEvents());
+        expect(events).toHaveLength(1);
+        expect(events[0].messages.filter(message => message.messageId === 832)).toHaveLength(1);
+        expect(events[0].channels.size).toBe(2);
+        expect(callbacks.alert).not.toHaveBeenCalled();
+    });
+
+    test("does not treat a standalone region as an alert when no source-only event exists", async () => {
+        classifyMessage.mockResolvedValue({
+            category: "IRRELEVANT", source: "", target: "", estimated_time: "",
+            reasoning: "orphan region fragment",
+        });
+
+        await processMessage("channel-1", "מרכז", callbacks, 841, Date.now());
+
+        expect(Object.values(getActiveEvents())).toHaveLength(0);
         expect(callbacks.alert).not.toHaveBeenCalled();
     });
 
