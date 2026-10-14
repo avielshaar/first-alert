@@ -330,6 +330,46 @@ describe("critical processor regressions", () => {
         expect(getLastPublished()).toMatchObject({ source: "איראן", target: "דרום" });
     });
 
+    test("explains that IRRELEVANT is message-alone classification before contextual correlation", async () => {
+        classifyMessage
+            .mockResolvedValueOnce({
+                category: "LAUNCH_REPORT",
+                reasoning: "source-only launch",
+                source: "איראן",
+                target: "",
+                estimated_time: "",
+                reportedSource: "איראן",
+                reportedTarget: "",
+                reportedEstimatedTime: "",
+            })
+            .mockResolvedValueOnce({
+                category: "IRRELEVANT",
+                reasoning: "Region-only follow-up has no launch verb by itself.",
+                source: "",
+                target: "",
+                estimated_time: "",
+            });
+
+        await processMessage("channel-1", "שיגורים מאיראן", callbacks, 1201, Date.now());
+
+        const output = jest.spyOn(console, "log").mockImplementation(() => {});
+        try {
+            await processMessage("channel-1", "למרכז", callbacks, 1202, Date.now());
+        } finally {
+            output.mockRestore();
+        }
+
+        const lines = output.mock.calls.map(call => String(call[0]));
+        expect(lines.some(line =>
+            line.includes("[Classifier] channel=channel-1 message=1202 | category=IRRELEVANT | scope=message-by-itself") &&
+            line.includes("next_step=check-contextual-follow-up")
+        )).toBe(true);
+        expect(lines.some(line =>
+            line.includes("[Correlation] channel=channel-1 message=1202 | action=ATTACHED") &&
+            line.includes("region=")
+        )).toBe(true);
+    });
+
     test("does not attach a region-only follow-up when multiple source-only incidents are candidates", async () => {
         classifyMessage
             .mockResolvedValueOnce({
