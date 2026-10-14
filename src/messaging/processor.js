@@ -14,6 +14,22 @@ const {
     LAST_PUBLISHED_DEDUP_WINDOW_MS,
     MIN_CHANNELS_TO_ACT,
 } = require("../config");
+const {
+    splitTargets,
+    mergeTargets,
+    targetsOverlap,
+    isDifferentIncident,
+    findMatchingEvent,
+} = require("../domain/event-correlation");
+const {
+    getEvidenceMessages,
+    getTargetVoteMap,
+    getCorroboratedFields,
+    getCorroboratedTime,
+    getPendingUncorroboratedFields,
+} = require("../domain/field-verification");
+const { safelyExtract, hydrateMessageEvidence } = require("../domain/message-evidence");
+const { readJsonStateFile, writeJsonStateFile } = require("../infrastructure/processor-state-file");
 
 const stateFile = process.env.FIRST_ALERT_STATE_FILE || "./data/processor-state.json";
 const activeEvents = {};
@@ -33,27 +49,24 @@ function persistProcessorState() {
             messageKeys: [...event.messageKeys],
         }])),
     };
-    const tempFile = `${stateFile}.tmp`;
     try {
-        require("fs").mkdirSync(require("path").dirname(tempFile), { recursive: true });
-        require("fs").writeFileSync(tempFile, JSON.stringify(payload, null, 2), { mode: 0o600 });
-        try { require("fs").chmodSync(tempFile, 0o600); } catch (_) { /* best effort on platforms without POSIX modes */ }
-        require("fs").renameSync(tempFile, stateFile);
+        writeJsonStateFile(stateFile, payload);
         stateNeedsPersistence = false;
         return true;
     } catch (error) {
         stateNeedsPersistence = true;
         log(`[State] Could not persist processor state to ${stateFile}: ${error.message || error}`);
-        try { require("fs").unlinkSync(tempFile); } catch (_) { /* ignore temp cleanup failure */ }
         return false;
     }
 }
 
+
+
 function loadProcessorState() {
-    const fs = require("fs");
     try {
-        if (!fs.existsSync(stateFile)) return;
-        const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+        const storedState = readJsonStateFile(stateFile);
+        if (!storedState.exists) return;
+        const parsed = storedState.value;
         if (
             !parsed ||
             typeof parsed !== "object" ||
@@ -101,7 +114,7 @@ function loadProcessorState() {
                 ...raw,
                 channels: new Set(raw.channels.map(String)),
                 // Older state files lack per-message evidence. Rebuild it from original text.
-                messages: raw.messages.map(message => hydrateMessageEvidence(message)),
+                messages: raw.messages.map(message => hydrateMessageEvidence(message, { extractSource, extractTargets, extractTime })),
                 messageKeys: new Set(raw.messageKeys),
             };
         }
@@ -189,36 +202,6 @@ function expireStaleLastPublished(now = Date.now()) {
     return true;
 }
 
-function splitTargets(value) {
-    return (value || "").split(",").map(s => s.trim()).filter(Boolean);
-}
-
-function mergeTargets(existing, incoming) {
-    const all = [...new Set([...splitTargets(existing), ...splitTargets(incoming)])];
-    // Only collapse a general region and its parenthesized sub-region; avoid arbitrary substring matches.
-    const merged = all.filter(item => !all.some(other =>
-        other !== item && item.startsWith(`${other} (`) && item.endsWith(")")
-    ));
-    return merged.sort().join(", ");
-}
-
-function targetsOverlap(left, right) {
-    const a = splitTargets(left);
-    const b = splitTargets(right);
-    if (!a.length || !b.length) return false;
-    return a.some(x => b.some(y =>
-        x === y || x.startsWith(`${y} (`) || y.startsWith(`${x} (`)
-    ));
-}
-
-function isDifferentIncident(event, published) {
-    if (!published) return true;
-    if (event.source && published.source && event.source !== published.source) return true;
-    // Two corroborated reports to disjoint targets should not be blindly merged as an update.
-    if (event.target && published.target && !targetsOverlap(event.target, published.target)) return true;
-    return false;
-}
-
 function cleanupExpiredEvents(now) {
     const expired = Object.entries(activeEvents).filter(([, event]) =>
         !event.deliveryPending && now - event.lastSeen > CONTEXT_WINDOW_MS
@@ -238,215 +221,6 @@ function removeEvent(eventId) {
     if (persistProcessorState()) return true;
     activeEvents[eventId] = event;
     return false;
-}
-
-function findMatchingEvent(classification, kind) {
-    const source = classification.source || "";
-    const target = classification.target || "";
-    const estimatedTime = classification.estimated_time || "";
-
-    const candidates = Object.values(activeEvents).filter(event => {
-        // Keep gathering evidence for a recently published event that still has unverified fields,
-        // even if the classifier labels the next message with the other valid event category.
-        if (event.kind !== kind && !event.corroborationPending) return false;
-        if (source && event.source && source !== event.source) return false;
-
-        const targetMatch = target && event.target && targetsOverlap(target, event.target);
-        if (kind === "UPDATE_TO_LAST") {
-            // An update is tied to the currently published event. Its target includes prior known areas,
-            // so a target match is the strongest available correlation signal.
-            if (targetMatch) return true;
-            if (!target || !event.target) return !estimatedTime || !event.estimated_time || estimatedTime === event.estimated_time;
-            return false;
-        }
-
-        if (targetMatch) return true;
-        // A different known target is a contradiction, even when the incoming report omits its source.
-        if (target && event.target) return false;
-        // Partial reports may be joined only if there is no contradiction. The caller merges only
-        // a unique compatible candidate; ambiguous source-only/target-only reports stay separate.
-        const hasPartialFields = !source || !event.source || !target || !event.target;
-        return hasPartialFields && Boolean(source || event.source || target || event.target);
-    });
-
-    if (candidates.length === 1) return candidates[0];
-    if (candidates.length > 1) {
-        // Prefer a uniquely exact source/target match; otherwise leave the reports separate.
-        const exact = candidates.filter(event =>
-            (!source || event.source === source) && (!target || event.target === target)
-        );
-        if (exact.length === 1) return exact[0];
-    }
-    return null;
-}
-
-
-function safelyExtract(extractor, ...args) {
-    try {
-        return typeof extractor === "function" ? (extractor(...args) || "") : "";
-    } catch (_) {
-        return "";
-    }
-}
-
-function hydrateMessageEvidence(message) {
-    if (!message || typeof message !== "object" || Array.isArray(message)) return message;
-    const text = typeof message.text === "string" ? message.text : "";
-    const referenceTime = message.time || Date.now();
-    return {
-        ...message,
-        reportedSource: typeof message.reportedSource === "string"
-            ? message.reportedSource
-            : safelyExtract(extractSource, text),
-        reportedTarget: typeof message.reportedTarget === "string"
-            ? message.reportedTarget
-            : safelyExtract(extractTargets, text),
-        reportedEstimatedTime: typeof message.reportedEstimatedTime === "string"
-            ? message.reportedEstimatedTime
-            : safelyExtract(extractTime, text, referenceTime),
-    };
-}
-
-function getEvidenceMessages(event) {
-    return (Array.isArray(event.messages) ? event.messages : [])
-        .filter(message => message && typeof message === "object" && !Array.isArray(message));
-}
-
-function getSourceVoteMap(messages) {
-    const votes = new Map();
-    for (const message of messages) {
-        const source = String(message.reportedSource || "").trim();
-        const channel = String(message.channel || "");
-        if (!source || !channel) continue;
-        if (!votes.has(source)) votes.set(source, new Set());
-        votes.get(source).add(channel);
-    }
-    return votes;
-}
-
-function getTargetVoteMap(messages) {
-    const candidates = new Set();
-    for (const message of messages) {
-        for (const target of splitTargets(message.reportedTarget)) candidates.add(target);
-    }
-    const votes = new Map();
-    for (const candidate of candidates) {
-        const channels = new Set();
-        for (const message of messages) {
-            const channel = String(message.channel || "");
-            if (!channel) continue;
-            if (splitTargets(message.reportedTarget).some(target => targetsOverlap(candidate, target))) {
-                channels.add(channel);
-            }
-        }
-        votes.set(candidate, channels);
-    }
-    return votes;
-}
-
-function parseClockMinutes(value) {
-    const match = /^(?:([01]?\d|2[0-3])):([0-5]\d)$/.exec(String(value || "").trim());
-    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
-}
-
-function formatClockMinutes(value) {
-    const minute = ((Math.round(value) % 1440) + 1440) % 1440;
-    return String(Math.floor(minute / 60)).padStart(2, "0") + ":" +
-        String(minute % 60).padStart(2, "0");
-}
-
-function getTimeEstimates(event) {
-    // Count one observation per channel; repeated posts are not independent votes.
-    const latestByChannel = new Map();
-    for (const message of getEvidenceMessages(event)) {
-        const value = String(message.reportedEstimatedTime || "").trim();
-        if (parseClockMinutes(value) === null) continue;
-        const channel = String(message.channel || "");
-        if (!channel) continue;
-        const timestamp = Number(message.time) || 0;
-        const current = latestByChannel.get(channel);
-        if (!current || timestamp >= current.timestamp) {
-            latestByChannel.set(channel, { channel, value, timestamp });
-        }
-    }
-    return [...latestByChannel.values()].sort((a, b) => a.timestamp - b.timestamp);
-}
-
-function getCorroboratedTime(event) {
-    const estimates = getTimeEstimates(event);
-    if (estimates.length < 2) return "";
-
-    const anchor = parseClockMinutes(estimates[0].value);
-    // Unwrap values around midnight so 23:59 and 00:02 are treated as 3 minutes apart.
-    const minutes = estimates.map(estimate => {
-        let value = parseClockMinutes(estimate.value);
-        while (value - anchor > 720) value -= 1440;
-        while (value - anchor < -720) value += 1440;
-        return value;
-    }).sort((a, b) => a - b);
-
-    const spread = minutes[minutes.length - 1] - minutes[0];
-    const middle = Math.floor(minutes.length / 2);
-    const median = minutes.length % 2
-        ? minutes[middle]
-        : (minutes[middle - 1] + minutes[middle]) / 2;
-
-    if (spread <= 3) {
-        const estimate = minutes.length === 2
-            ? (minutes[0] + minutes[1]) / 2
-            : median;
-        return formatClockMinutes(estimate);
-    }
-
-    const range = formatClockMinutes(minutes[0]) + "–" +
-        formatClockMinutes(minutes[minutes.length - 1]);
-    return estimates.length >= 3
-        ? range + " (חציון " + formatClockMinutes(median) + ")"
-        : range;
-}
-
-function getCorroboratedFields(event) {
-    const messages = getEvidenceMessages(event);
-    const sourceVotes = getSourceVoteMap(messages);
-    const verifiedSources = [...sourceVotes.entries()].filter(([, channels]) => channels.size >= 2);
-    const source = verifiedSources.length === 1 ? verifiedSources[0][0] : "";
-
-    const targetVotes = getTargetVoteMap(messages);
-    const verifiedTargets = [...targetVotes.entries()]
-        .filter(([, channels]) => channels.size >= 2)
-        .map(([target]) => target);
-    const target = mergeTargets("", verifiedTargets.join(", "));
-
-    return { source, target, estimated_time: getCorroboratedTime(event) };
-}
-
-function getPendingUncorroboratedFields(event, published) {
-    const messages = getEvidenceMessages(event);
-    const pending = new Set();
-
-    const sourceVotes = getSourceVoteMap(messages);
-    const confirmedSourceCandidates = [...sourceVotes.values()].filter(channels => channels.size >= 2);
-    if (sourceVotes.size > 1 && confirmedSourceCandidates.length !== 1) {
-        pending.add("source");
-    }
-    for (const [source, channels] of sourceVotes) {
-        if (channels.size === 1 && source !== String(published && published.source || "")) {
-            pending.add("source");
-        }
-    }
-
-    const publishedTargets = splitTargets(published && published.target);
-    for (const [target, channels] of getTargetVoteMap(messages)) {
-        const alreadyPublished = publishedTargets.some(existing => targetsOverlap(existing, target));
-        if (channels.size === 1 && !alreadyPublished) pending.add("target");
-    }
-
-    const estimates = getTimeEstimates(event);
-    if (estimates.length === 1 &&
-        estimates[0].value !== String(published && published.estimated_time || "")) {
-        pending.add("time");
-    }
-    return [...pending];
 }
 
 function createEvent(classification, kind, now) {
@@ -812,7 +586,7 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     if (classification.category === "UPDATE_TO_LAST" && !publishedBaseline) return true;
 
     const kind = classification.category;
-    const matchedEvent = findMatchingEvent(classification, kind);
+    const matchedEvent = findMatchingEvent(classification, kind, activeEvents);
     const event = matchedEvent || createEvent(classification, kind, now);
     mergeClassificationIntoEvent(event, classification);
     addMessageToEvent(event, channelId, messageText, messageId, messageTimestamp, now, classification);
