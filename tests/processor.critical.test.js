@@ -353,13 +353,13 @@ describe("critical processor regressions", () => {
         await processMessage("channel-1", "שיגורים מאיראן", callbacks, 1201, Date.now());
 
         const output = jest.spyOn(console, "log").mockImplementation(() => {});
+        let lines;
         try {
             await processMessage("channel-1", "למרכז", callbacks, 1202, Date.now());
+            lines = output.mock.calls.map(call => String(call[0]));
         } finally {
             output.mockRestore();
         }
-
-        const lines = output.mock.calls.map(call => String(call[0]));
         expect(lines.some(line =>
             line.includes("[Classifier] channel=channel-1 message=1202 | category=IRRELEVANT | scope=message-by-itself") &&
             line.includes("next_step=check-contextual-follow-up")
