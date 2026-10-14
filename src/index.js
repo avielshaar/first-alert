@@ -1,5 +1,5 @@
 const { log } = require("./utils/logger");
-const { validateConfig } = require("./config");
+const { validateConfig, ALERT_CHANNELS } = require("./config");
 
 const configErrors = validateConfig();
 if (configErrors.length > 0) {
@@ -7,6 +7,8 @@ if (configErrors.length > 0) {
     for (const error of configErrors) log("[Config] " + error);
     process.exit(1);
 }
+
+log(`[System] Startup validation passed | monitored_channel_count=${ALERT_CHANNELS.length} | channel_ids=[${ALERT_CHANNELS.join(", ")}] | log_time_zone=${process.env.LOG_TIME_ZONE || "Asia/Jerusalem"} | node=${process.version}`);
 
 const { initializeWhatsApp, sendAlert, sendUpdate, shutdownWhatsApp } = require("./clients/whatsapp");
 const { shutdownTelegram } = require("./clients/telegram");
