@@ -22,6 +22,7 @@ const {
     findMatchingEvent,
 } = require("../domain/event-correlation");
 const {
+    getEvidenceMessages,
     getTargetVoteMap,
     getCorroboratedFields,
     getCorroboratedTime,
