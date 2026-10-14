@@ -647,6 +647,13 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
     if (candidates.length !== 1) return null;
 
     const event = candidates[0];
+    // Telegram may redeliver the same message when its cursor is retried. A duplicate must
+    // not refresh the event's age or mutate fields before addMessageToEvent notices the key.
+    const messageKey = messageId !== undefined && messageId !== null
+        ? `${channelId}:${messageId}`
+        : `${channelId}:${text}`;
+    if (event.messageKeys.has(messageKey)) return true;
+
     const partialClassification = {
         source: "",
         target,
