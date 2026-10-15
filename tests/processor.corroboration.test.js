@@ -11,6 +11,8 @@ jest.mock("../src/messaging/classifier", () => ({
     extractSource: jest.fn(() => ""),
     extractTargets: jest.fn(() => ""),
     extractTime: jest.fn(() => ""),
+    isStrictlyBlacklisted: jest.fn(text => ["נפגעים", "אין סכנה", "הוסר החשש", "שריפה", "תיעוד"].some(word => String(text).includes(word))),
+    isRegionOnlyFollowUp: jest.fn(text => /^(?:(?:לעבר|לאזור|באזור|אזור|לכיוון|ולאזור|ובאזור|אל|ול|וב|ל|ב)[ -]*)?ה?(?:מרכז|דרום|צפון)(?:\s*\([^)]*\))?[\s.,!?…]*$/u.test(String(text).trim())),
 }));
 
 const { classifyMessage } = require("../src/messaging/classifier");
