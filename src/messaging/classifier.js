@@ -137,7 +137,7 @@ function extractTime(text, referenceTime = new Date()) {
     // unrelated timestamps elsewhere in the same Telegram message.
     const clockToken = "([01]?\\d|2[0-3]):([0-5]\\d)";
     const explicitEtaClock = new RegExp(
-        "(?:זמן\\s*הגעה|צפי\\s*הגעה|הגעה\\s*(?:משוערת|צפויה)|זמן\\s*משוער|" +
+        "(?:זמן\\s*הגעה(?:\\s*(?:משוער(?:ת)?|צפוי(?:ה)?))?|צפי\\s*הגעה|הגעה\\s*(?:משוערת|צפויה)|זמן\\s*משוער|" +
         "צפוי(?:ה)?\\s+להגיע|צפויים?\\s+להגיע|יגיעו?|יגיע)" +
         "\\s*(?:(?:הוא|היא)\\s*)?(?:בשעה\\s*)?(?:ב\\s*)?[-–:=]?\\s*" +
         clockToken + "(?!\\d)",
@@ -206,7 +206,7 @@ function extractTime(text, referenceTime = new Date()) {
             "giu"
         ),
         new RegExp(
-            "(?:זמן\\s*הגעה|צפי\\s*הגעה|הגעה\\s*(?:משוערת|צפויה)|זמן\\s*משוער|ETA)" +
+            "(?:זמן\\s*הגעה(?:\\s*(?:משוער(?:ת)?|צפוי(?:ה)?))?|צפי\\s*הגעה|הגעה\\s*(?:משוערת|צפויה)|זמן\\s*משוער|ETA)" +
             "\\s*[:：=–-]?\\s*(?:בעוד\\s*)?(" + durationPattern + ")",
             "giu"
         ),
