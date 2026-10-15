@@ -61,7 +61,7 @@ function isRegionOnlyFollowUp(text) {
     for (const region of REGION_MAP) {
         for (const alias of region.aliases) {
             const escapedAlias = alias
-                .replace(/[|\\{}()[\]^$+*?.]/gu, "\\const REGION_MAP = [")
+                .split("").map(character => "\\^$.*+?()[]{}|".includes(character) ? "\\" + character : character).join("")
                 .replace(/"/gu, '["״]');
             for (const prefix of prefixes) {
                 const pattern = new RegExp(
