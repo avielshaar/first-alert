@@ -49,42 +49,53 @@ describe("critical processor regressions", () => {
         classifyMessage.mockResolvedValue({ ...launch });
     });
 
-    test("a later report for an already-published concurrent incident does not resend it as a new alert", async () => {
-        const iran = {
-            category: "LAUNCH_REPORT", reasoning: "Iran incident",
-            source: "איראן", target: "מרכז", estimated_time: "10:30",
-            reportedSource: "איראן", reportedTarget: "מרכז", reportedEstimatedTime: "10:30",
+    test.each([
+        ["Iran", "Lebanon"],
+        ["Lebanon", "Iran"],
+    ])("a repeat for the older %s incident is not resent after %s publishes", async (firstName, secondName) => {
+        const incidents = {
+            Iran: {
+                category: "LAUNCH_REPORT", reasoning: "Iran incident",
+                source: "איראן", target: "מרכז", estimated_time: "10:30",
+                reportedSource: "איראן", reportedTarget: "מרכז", reportedEstimatedTime: "10:30",
+            },
+            Lebanon: {
+                category: "LAUNCH_REPORT", reasoning: "Lebanon incident",
+                source: "לבנון", target: "צפון", estimated_time: "09:00",
+                reportedSource: "לבנון", reportedTarget: "צפון", reportedEstimatedTime: "09:00",
+            },
         };
-        const lebanon = {
-            category: "LAUNCH_REPORT", reasoning: "Lebanon incident",
-            source: "לבנון", target: "צפון", estimated_time: "09:00",
-            reportedSource: "לבנון", reportedTarget: "צפון", reportedEstimatedTime: "09:00",
-        };
-        const iranDuplicateUpdate = {
-            category: "UPDATE_TO_LAST", reasoning: "repeat of existing Iran evidence",
-            source: "איראן", target: "מרכז", estimated_time: "10:30",
-            reportedSource: "איראן", reportedTarget: "מרכז", reportedEstimatedTime: "10:30",
+        const first = incidents[firstName];
+        const second = incidents[secondName];
+        const repeatedFirst = {
+            ...first,
+            category: "UPDATE_TO_LAST",
+            reasoning: "repeat of existing incident evidence",
         };
 
         classifyMessage
-            .mockResolvedValueOnce({ ...iran })
-            .mockResolvedValueOnce({ ...iran })
-            .mockResolvedValueOnce({ ...lebanon })
-            .mockResolvedValueOnce({ ...lebanon })
-            .mockResolvedValueOnce({ ...iranDuplicateUpdate });
+            .mockResolvedValueOnce({ ...first })
+            .mockResolvedValueOnce({ ...first })
+            .mockResolvedValueOnce({ ...second })
+            .mockResolvedValueOnce({ ...second })
+            .mockResolvedValueOnce(repeatedFirst);
 
-        await processMessage("channel-1", "Iran launch report 1", callbacks, 101);
-        await processMessage("channel-2", "Iran launch report 2", callbacks, 201);
-        await processMessage("channel-1", "Lebanon launch report 1", callbacks, 102);
-        await processMessage("channel-2", "Lebanon launch report 2", callbacks, 202);
+        await processMessage("channel-1", firstName + " launch report 1", callbacks, 101);
+        await processMessage("channel-2", firstName + " launch report 2", callbacks, 201);
+        await processMessage("channel-1", secondName + " launch report 1", callbacks, 102);
+        await processMessage("channel-2", secondName + " launch report 2", callbacks, 202);
 
         expect(callbacks.alert).toHaveBeenCalledTimes(2);
-        expect(callbacks.alert).toHaveBeenNthCalledWith(1, "איראן", "מרכז", "10:30");
-        expect(callbacks.alert).toHaveBeenNthCalledWith(2, "לבנון", "צפון", "09:00");
+        expect(callbacks.alert).toHaveBeenNthCalledWith(
+            1, first.source, first.target, first.estimated_time
+        );
+        expect(callbacks.alert).toHaveBeenNthCalledWith(
+            2, second.source, second.target, second.estimated_time
+        );
 
-        // A repeat from the first incident must be compared to that incident's own
-        // publication baseline, not to whichever unrelated incident was published last.
-        await processMessage("channel-1", "Iran report repeated", callbacks, 103);
+        // A repeat from the first incident must use its own baseline, regardless of
+        // which of the two incidents was most recently published.
+        await processMessage("channel-1", firstName + " report repeated", callbacks, 103);
 
         expect(callbacks.alert).toHaveBeenCalledTimes(2);
         expect(callbacks.update).not.toHaveBeenCalled();
