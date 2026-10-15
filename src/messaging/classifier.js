@@ -176,7 +176,7 @@ function extractTime(text, referenceTime = new Date()) {
     };
 
     function durationToMinutes(rawDuration) {
-        const duration = rawDuration.trim().replace(/\\s+/g, " ");
+        const duration = rawDuration.trim().replace(/\s+/g, " ");
         if (duration === "שעה") return 60;
         if (duration === "שעתיים") return 120;
         if (duration === "חצי שעה") return 30;
@@ -186,7 +186,7 @@ function extractTime(text, referenceTime = new Date()) {
         if (duration === "שעה ורבע") return 75;
         if (duration === "שעתיים ורבע") return 135;
 
-        const match = duration.match(/^(.+?)\\s*(דקות?|דק(?:ות)?[׳']?|שעות?)$/u);
+        const match = duration.match(/^(.+?)\s*(דקות?|דק(?:ות)?[׳']?|שעות?)$/u);
         if (!match) return null;
         const token = match[1].trim();
         const normalizedNumber = token.replace(",", ".");
