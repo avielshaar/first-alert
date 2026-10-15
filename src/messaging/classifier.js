@@ -176,7 +176,7 @@ function extractTime(text, referenceTime = new Date()) {
         // Check only the current clause. This avoids reading "לא יגיעו בעוד 10 דקות"
         // as an affirmative ETA while allowing a later affirmative clause to be parsed.
         const clausePrefix = sourceText.slice(0, index).split(/[,.!?;:\n]/u).pop();
-        return /(?:^|\\s)(?:לא|אין|אינו|איננו|אינה|אינם|אינן)(?:\\s+\\S+){0,2}\\s*$/u.test(clausePrefix);
+        return /(?:^|\\s)(?:לא|שלא|אין|אינו|איננו|אינה|אינם|אינן)(?:\\s+\\S+){0,2}\\s*$/u.test(clausePrefix);
     }
 
     // Prefer an absolute clock time explicitly tied to arrival/ETA language over
