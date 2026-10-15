@@ -134,6 +134,38 @@ describe("processor state recovery safety", () => {
         expect(callbacks.update).not.toHaveBeenCalled();
     });
 
+    test("restores an incident-specific publication baseline across restart", () => {
+        const baseline = {
+            source: "איראן",
+            target: "מרכז",
+            estimated_time: "10:30",
+            verificationVersion: 1,
+            publishedAt: Date.now(),
+        };
+        const state = makeState({
+            activeEvents: {
+                "event-9": {
+                    id: "event-9",
+                    kind: "UPDATE_TO_LAST",
+                    channels: ["-1001", "-1002"],
+                    messages: [],
+                    messageKeys: [],
+                    source: "איראן",
+                    target: "מרכז",
+                    estimated_time: "10:30",
+                    firstSeen: 1767254400000,
+                    lastSeen: 1767254400000,
+                    corroborationPending: true,
+                    publishedBaseline: baseline,
+                },
+            },
+        });
+
+        const processor = loadProcessorWithState(JSON.stringify(state));
+
+        expect(processor.getActiveEvents()["event-9"].publishedBaseline).toEqual(baseline);
+    });
+
     test("refuses to continue when processor state JSON is malformed", () => {
         expect(() => loadProcessorWithState('{"version":1,')).toThrow(
             /Refusing to start to avoid losing pending incident evidence/
