@@ -9,7 +9,33 @@ jest.mock("@google/genai", () => ({
 
 process.env.GEMINI_API_KEY = "test-key";
 process.env.GEMINI_MODEL = "gemini-3.5-flash-lite";
-const { classifyMessage, extractTime } = require("../src/messaging/classifier");
+const { classifyMessage, extractTime, isStrictlyBlacklisted, isRegionOnlyFollowUp } = require("../src/messaging/classifier");
+
+describe("deterministic contextual follow-up guards", () => {
+    test.each([
+        ["מרכז", true],
+        ["למרכז", true],
+        ["באזור המרכז", true],
+        ["דרום (אשקלון)", true],
+        ["יו״ש", true],
+        ["הוסר החשש במרכז", false],
+        ["נפגעים במרכז", false],
+        ["דיווח במרכז", false],
+        ["התרעה במרכז", false],
+        ["מרכז, דרום", false],
+        ["הודעה ארוכה שמתארת אירוע באזור המרכז", false],
+    ])("recognizes only a region-only fragment: %s", (message, expected) => {
+        expect(isRegionOnlyFollowUp(message)).toBe(expected);
+    });
+
+    test.each([
+        ["נפגעים במרכז", true],
+        ["הוסר החשש במרכז", true],
+        ["מרכז", false],
+    ])("uses one shared blacklist decision for %s", (message, expected) => {
+        expect(isStrictlyBlacklisted(message)).toBe(expected);
+    });
+});
 
 describe("critical classifier regressions", () => {
     beforeEach(() => mockGenerateContent.mockReset());
