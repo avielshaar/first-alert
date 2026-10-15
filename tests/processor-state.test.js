@@ -80,6 +80,42 @@ describe("processor state recovery safety", () => {
         );
     });
 
+    test.each(["source", "target", "estimated_time"])(
+        "refuses to continue when restored lastPublished.%s is not a string",
+        field => {
+            const state = makeState({
+                lastPublished: {
+                    source: "איראן",
+                    target: "מרכז",
+                    estimated_time: "10:00",
+                    verificationVersion: 1,
+                    publishedAt: 1767254400000,
+                },
+            });
+            state.lastPublished[field] = { malformed: true };
+
+            expect(() => loadProcessorWithState(JSON.stringify(state))).toThrow(
+                new RegExp("invalid lastPublished " + field)
+            );
+        }
+    );
+
+    test("refuses to continue when restored publication verification version is unsupported", () => {
+        const state = makeState({
+            lastPublished: {
+                source: "איראן",
+                target: "מרכז",
+                estimated_time: "10:00",
+                verificationVersion: 999,
+                publishedAt: 1767254400000,
+            },
+        });
+
+        expect(() => loadProcessorWithState(JSON.stringify(state))).toThrow(
+            /unsupported lastPublished verificationVersion/
+        );
+    });
+
     test("refuses to continue when pending event collections are not recoverable", () => {
         const state = makeState();
         state.activeEvents["event-9"].channels = null;
