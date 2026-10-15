@@ -81,9 +81,19 @@ function loadProcessorState() {
         if (!Number.isSafeInteger(parsed.nextEventId) || parsed.nextEventId < 1) {
             throw new Error("invalid nextEventId in processor state file");
         }
-        if (parsed.lastPublished !== null && parsed.lastPublished !== undefined &&
-            (typeof parsed.lastPublished !== "object" || Array.isArray(parsed.lastPublished))) {
-            throw new Error("invalid lastPublished value in processor state file");
+        if (parsed.lastPublished !== null && parsed.lastPublished !== undefined) {
+            if (typeof parsed.lastPublished !== "object" || Array.isArray(parsed.lastPublished)) {
+                throw new Error("invalid lastPublished value in processor state file");
+            }
+            for (const field of ["source", "target", "estimated_time"]) {
+                if (typeof parsed.lastPublished[field] !== "string") {
+                    throw new Error("invalid lastPublished " + field + " in processor state file");
+                }
+            }
+            if (parsed.lastPublished.verificationVersion !== undefined &&
+                parsed.lastPublished.verificationVersion !== 1) {
+                throw new Error("unsupported lastPublished verificationVersion in processor state file");
+            }
         }
 
         const loadedEvents = {};
