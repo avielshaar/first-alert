@@ -190,7 +190,7 @@ function extractTime(text, referenceTime = new Date()) {
         if (!match) return null;
         const token = match[1].trim();
         const normalizedNumber = token.replace(",", ".");
-        const amount = /^\\d+(?:\\.\\d+)?$/.test(normalizedNumber)
+        const amount = /^\d+(?:\.\d+)?$/.test(normalizedNumber)
             ? Number(normalizedNumber)
             : hebrewNumbers[token];
         if (!Number.isFinite(amount) || amount <= 0) return null;
