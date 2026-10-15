@@ -59,12 +59,16 @@ describe("processor state recovery safety", () => {
         expect([...processor.getActiveEvents()["event-9"].channels]).toEqual(["-1001"]);
     });
 
-    test("does not duplicate a legacy published incident after a different incident became the global baseline", async () => {
+    test.each([
+        ["לבנון", "צפון", "different source and target"],
+        ["איראן", "צפון", "same source but conflicting target"],
+        ["לבנון", "מרכז", "same target but conflicting source"],
+    ])("does not duplicate a legacy published Iran incident when global baseline is %s -> %s (%s)", async (globalSource, globalTarget) => {
         const now = Date.now();
         const state = makeState({
             lastPublished: {
-                source: "לבנון",
-                target: "צפון",
+                source: globalSource,
+                target: globalTarget,
                 estimated_time: "09:00",
                 verificationVersion: 1,
                 publishedAt: now,
