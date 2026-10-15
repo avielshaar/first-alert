@@ -431,7 +431,7 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
     log(`[Dispatch] event=${event.id} | outcome=UPDATE_DELIVERED | baseline_now={source:${JSON.stringify(finalSource || "—")}, target:${JSON.stringify(finalTarget || "—")}, time:${JSON.stringify(finalTime || "—")}}.`);
     delete event.deliveryPending;
 
-    const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+    const pendingFields = getPendingUncorroboratedFields(event, nextBaseline);
     event.corroborationPending = true;
     if (pendingFields.length > 0) {
         log(`[Verification] ${event.id} update sent using corroborated fields only; still waiting for: ${pendingFields.join(", ")}.`);
@@ -476,7 +476,8 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
         // A region that is already independently corroborated or already present in the
         // published baseline needs no new attachment.
         const corroboratedTargets = splitTargets(getCorroboratedFields(event).target);
-        const publishedTargets = splitTargets(published && published.target);
+        const eventBaseline = getEventPublishedBaseline(event, published, now);
+        const publishedTargets = splitTargets(eventBaseline && eventBaseline.target);
         if (
             corroboratedTargets.some(existing => targetsOverlap(existing, target)) ||
             publishedTargets.some(existing => targetsOverlap(existing, target))
@@ -533,7 +534,7 @@ async function processAttachedRegionFollowUp(event, callbacks, channelId, messag
         return false;
     }
 
-    const publishedBaseline = getVerifiedLastPublished();
+    const publishedBaseline = getEventPublishedBaseline(event, getVerifiedLastPublished());
     const evidence = getCorroboratedFields(event);
     if (event.channels.size < MIN_CHANNELS_TO_ACT) {
         log(`[Verification] event=${event.id} | attached follow-up recorded, but event-level confirmation is ${event.channels.size}/${MIN_CHANNELS_TO_ACT} channels | confirmed_source=${evidence.source || "—"} | confirmed_target=${evidence.target || "—"} | waiting for another configured channel.`);
@@ -623,12 +624,18 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
         return false;
     }
 
-    // Updates must also be corroborated by multiple configured channels. One channel cannot
-    // bypass the confirmation rule and publish an unverified change immediately.
-    if (classification.category === "UPDATE_TO_LAST" && !publishedBaseline) return true;
-
+    // An incident may have been published before a different, concurrent incident.
+    // Compare matched events to their own baseline, not to the most recent global publication.
     const kind = classification.category;
     const matchedEvent = findMatchingEvent(classification, kind, activeEvents);
+    const eventBaseline = matchedEvent
+        ? getEventPublishedBaseline(matchedEvent, publishedBaseline, now)
+        : publishedBaseline;
+
+    // Updates require a known baseline for the event being updated. If there is no matching
+    // published incident, do not allow an update classification to create a new event.
+    if (classification.category === "UPDATE_TO_LAST" && !eventBaseline) return true;
+
     const event = matchedEvent || createEvent(classification, kind, now);
     mergeClassificationIntoEvent(event, classification);
     addMessageToEvent(event, channelId, messageText, messageId, messageTimestamp, now, classification);
@@ -639,14 +646,14 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     }
 
     const evidence = getCorroboratedFields(event);
-    const pendingFields = getPendingUncorroboratedFields(event, publishedBaseline);
+    const pendingFields = getPendingUncorroboratedFields(event, eventBaseline);
     log(`[Correlation] ${messageRef} | action=${matchedEvent ? "MERGE_INTO_EXISTING" : "CREATE_EVENT"} | event=${event.id} | event_kind=${event.kind} | channels=${event.channels.size}/${MIN_CHANNELS_TO_ACT} required [${[...event.channels].join(", ")}] | stored_messages=${event.messages.length} | confirmed_fields={source:${JSON.stringify(evidence.source || "—")}, target:${JSON.stringify(evidence.target || "—")}, time:${JSON.stringify(evidence.estimated_time || "—")}} | pending_field_verification=[${pendingFields.join(", ") || "none"}].`);
     if (event.channels.size < MIN_CHANNELS_TO_ACT) {
         log(`[Verification] event=${event.id} | event confirmation=${event.channels.size}/${MIN_CHANNELS_TO_ACT} channels; waiting for ${MIN_CHANNELS_TO_ACT - event.channels.size} additional independent channel(s).`);
         return true;
     }
 
-    if (!publishedBaseline) {
+    if (!eventBaseline) {
         // Do not block a corroborated incident just because one optional field (usually
         // the target region) has only one channel's support. Publish only independently
         // corroborated source/target fields; unverified fields remain blank and may be
@@ -661,9 +668,9 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
         return publishNewAlert(event, callbacks, evidence);
     }
 
-    if (isDifferentIncident(evidence, publishedBaseline)) {
+    if (isDifferentIncident(evidence, eventBaseline)) {
         if (!evidence.target) {
-            const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+            const pendingFields = getPendingUncorroboratedFields(event, eventBaseline);
             log(`[Verification] ${event.id} appears different, but its target is not confirmed by two channels` +
                 (pendingFields.length ? ` (pending: ${pendingFields.join(", ")}).` : "."));
             return true;
@@ -673,7 +680,7 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     }
 
     // New alerts and tactical updates use the same per-field corroboration.
-    return publishUpdate(event, callbacks, evidence);
+    return publishUpdate(event, callbacks, evidence, eventBaseline);
 }
 
 module.exports = {
