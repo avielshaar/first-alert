@@ -200,6 +200,15 @@ function getEventPublishedBaseline(event, fallbackBaseline = null, now = Date.no
         // baseline only when there is positive evidence that it belongs to this event.
         // Otherwise the baseline may belong to a different incident published later.
         if (event.kind === "UPDATE_TO_LAST" && event.corroborationPending && fallbackBaseline) {
+            const sourceConflict = Boolean(
+                event.source && fallbackBaseline.source && event.source !== fallbackBaseline.source
+            );
+            const targetConflict = Boolean(
+                event.target && fallbackBaseline.target &&
+                !targetsOverlap(event.target, fallbackBaseline.target)
+            );
+            if (sourceConflict || targetConflict) return null;
+
             const sourceMatches = Boolean(
                 event.source && fallbackBaseline.source && event.source === fallbackBaseline.source
             );
