@@ -163,7 +163,7 @@ function extractTime(text, referenceTime = new Date()) {
         "שמונה|תשעה|תשע|עשרה|עשר|עשרים|אחת|אחד|רבע|חצי)";
     const durationPattern =
         "(?:שעתיים\\s+(?:וחצי|ורבע)|שעה\\s+(?:וחצי|ורבע)|חצי\\s+שעה|רבע\\s+שעה|" +
-        "שעתיים|שעה|" + numberToken + "\\s*(?:דקות?|דק(?:ות)?[׳']?|שעות?))";
+        "שעתיים|שעה|דקה|" + numberToken + "\\s*(?:דקות?|דקה|דק(?:ות)?[׳']?|שעות?))";
 
     const hebrewNumbers = {
         "אחת": 1, "אחד": 1, "שניים": 2, "שתיים": 2, "שני": 2,
@@ -178,6 +178,7 @@ function extractTime(text, referenceTime = new Date()) {
     function durationToMinutes(rawDuration) {
         const duration = rawDuration.trim().replace(/\s+/g, " ");
         if (duration === "שעה") return 60;
+        if (duration === "דקה") return 1;
         if (duration === "שעתיים") return 120;
         if (duration === "חצי שעה") return 30;
         if (duration === "רבע שעה") return 15;
@@ -186,7 +187,7 @@ function extractTime(text, referenceTime = new Date()) {
         if (duration === "שעה ורבע") return 75;
         if (duration === "שעתיים ורבע") return 135;
 
-        const match = duration.match(/^(.+?)\s*(דקות?|דק(?:ות)?[׳']?|שעות?)$/u);
+        const match = duration.match(/^(.+?)\s*(דקות?|דקה|דק(?:ות)?[׳']?|שעות?)$/u);
         if (!match) return null;
         const token = match[1].trim();
         const normalizedNumber = token.replace(",", ".");
