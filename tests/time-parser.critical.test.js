@@ -44,6 +44,16 @@ describe("extractTime — ETA parsing and ambiguous input", () => {
         expect(extractTime(message, atTenAm)).toBe("");
     });
 
+    test.each([
+        ["לא בעוד 10 דקות", ""],
+        ["לא צפוי להגיע תוך 20 דקות", ""],
+        ["לא יגיעו ב-10:30", ""],
+        ["ההערכה היא שלא יגיעו ב-10:30", ""],
+        ["לא בעוד 10 דקות אלא תוך 20 דקות", "10:20"],
+    ])("does not interpret negated ETA language as an affirmative arrival time: %s", (message, expected) => {
+        expect(extractTime(message, atTenAm)).toBe(expected);
+    });
+
     test("uses the Telegram message timestamp, not processing time, for a relative ETA", () => {
         const telegramTimestampSeconds = atTenAm.getTime() / 1000;
         expect(extractTime("בעוד 10 דקות", telegramTimestampSeconds)).toBe("10:10");
