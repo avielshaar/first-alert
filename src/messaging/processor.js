@@ -349,6 +349,7 @@ async function publishNewAlert(event, callbacks, verifiedFields) {
         verificationVersion: 1,
         publishedAt: Date.now(),
     };
+    event.publishedBaseline = { ...lastPublished };
     log(`[Dispatch] event=${event.id} | outcome=ALERT_DELIVERED | published_baseline={source:${JSON.stringify(lastPublished.source || "—")}, target:${JSON.stringify(lastPublished.target || "—")}, time:${JSON.stringify(lastPublished.estimated_time || "—")}}.`);
     delete event.deliveryPending;
 
@@ -364,19 +365,20 @@ async function publishNewAlert(event, callbacks, verifiedFields) {
     return persistProcessorState();
 }
 
-async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(event)) {
-    if (!lastPublished) return true;
+async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(event), publishedBaseline = getEventPublishedBaseline(event, lastPublished)) {
+    const baseline = publishedBaseline || getEventPublishedBaseline(event, lastPublished);
+    if (!baseline) return true;
 
-    const mergedTarget = mergeTargets(lastPublished.target, evidence.target);
-    const finalTarget = mergedTarget || lastPublished.target || "";
-    const finalTime = evidence.estimated_time || lastPublished.estimated_time || "";
-    const finalSource = evidence.source || lastPublished.source || "";
+    const mergedTarget = mergeTargets(baseline.target, evidence.target);
+    const finalTarget = mergedTarget || baseline.target || "";
+    const finalTime = evidence.estimated_time || baseline.estimated_time || "";
+    const finalSource = evidence.source || baseline.source || "";
     const hasNewSource = Boolean(finalSource && finalSource !== (lastPublished.source || ""));
     const hasNewTarget = finalTarget !== (lastPublished.target || "");
     const hasNewTime = Boolean(finalTime && finalTime !== lastPublished.estimated_time);
 
     if (!hasNewSource && !hasNewTarget && !hasNewTime) {
-        const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+        const pendingFields = getPendingUncorroboratedFields(event, baseline);
         if (pendingFields.length > 0 || event.corroborationPending) {
             event.corroborationPending = true;
             if (pendingFields.length > 0) {
@@ -401,7 +403,7 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
     try {
         result = await callbacks.update(
             { source: finalSource, target: finalTarget, estimated_time: finalTime },
-            lastPublished,
+            baseline,
             updateType
         );
     } catch (error) {
@@ -417,13 +419,15 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
         return false;
     }
 
-    lastPublished = {
+    const nextBaseline = {
         source: finalSource,
         target: finalTarget,
         estimated_time: finalTime,
         verificationVersion: 1,
         publishedAt: Date.now(),
     };
+    event.publishedBaseline = { ...nextBaseline };
+    lastPublished = nextBaseline;
     log(`[Dispatch] event=${event.id} | outcome=UPDATE_DELIVERED | baseline_now={source:${JSON.stringify(finalSource || "—")}, target:${JSON.stringify(finalTarget || "—")}, time:${JSON.stringify(finalTime || "—")}}.`);
     delete event.deliveryPending;
 
