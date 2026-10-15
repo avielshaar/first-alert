@@ -21,7 +21,12 @@ function readCursorState(filePath, configuredChannelIds = [], fsImpl = fs) {
         }
 
         for (const [channelId, rawId] of Object.entries(parsed)) {
-            const id = Number(rawId);
+            // Only JSON numbers or digit-only legacy strings represent persisted message IDs.
+            // Number(null), Number(false), and Number("") all become zero and must not
+            // make a corrupted cursor look like a valid first-run baseline.
+            const hasValidType = typeof rawId === "number" ||
+                (typeof rawId === "string" && /^\\d+$/.test(rawId));
+            const id = hasValidType ? Number(rawId) : NaN;
             if (!Number.isSafeInteger(id) || id < 0) {
                 if (configuredIds.has(String(channelId))) {
                     throw new Error("invalid cursor for configured channel " + channelId);
