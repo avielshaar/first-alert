@@ -38,6 +38,45 @@ const SOURCES = [
     { base: "עזה", keywords: ["עזה", "רצועת"] }
 ];
 
+function isStrictlyBlacklisted(text) {
+    const message = typeof text === "string" ? text : String(text ?? "");
+    return STRICT_BLACKLIST.some(word => message.includes(word));
+}
+
+function isRegionOnlyFollowUp(text) {
+    if (typeof text !== "string") return false;
+
+    const normalized = text.trim()
+        .replace(/[״“”]/gu, '"')
+        .replace(/\s+/gu, " ")
+        .replace(/[\s.,!?;:…]+$/gu, "");
+    if (!normalized || normalized.length > 60) return false;
+
+    const prefixes = [
+        "", "ל", "ל-", "ב", "ב-", "ול", "ול-", "וב", "וב-",
+        "לעבר ", "לאזור ", "באזור ", "אזור ", "לכיוון ", "אל ",
+        "ולאזור ", "ובאזור ",
+    ];
+
+    for (const region of REGION_MAP) {
+        for (const alias of region.aliases) {
+            const escapedAlias = alias
+                .replace(/[|\\{}()[\]^$+*?.]/gu, "\\const REGION_MAP = [")
+                .replace(/"/gu, '["״]');
+            for (const prefix of prefixes) {
+                const pattern = new RegExp(
+                    "^(?:" + prefix + ")ה?" + escapedAlias +
+                    "(?:\\s*\\([^()]{1,40}\\))?$",
+                    "u"
+                );
+                if (pattern.test(normalized)) return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 const REGION_MAP = [
     { base: "מרכז", aliases: ["מרכז", "גוש דן", "תל אביב", "ת\"א", "הרצליה"] },
     { base: "דרום", aliases: ["דרום", "עוטף", "באר שבע", "ב\"ש", "אשדוד", "אשקלון"] },
@@ -244,7 +283,7 @@ function extractTime(text, referenceTime = new Date()) {
     return uniqueAbsoluteTimes.length === 1 ? uniqueAbsoluteTimes[0] : "";
 }
 async function classifyMessage(channelId, messageText, lastPublished, messageTimestamp = null) {
-    if (STRICT_BLACKLIST.some(word => messageText.includes(word))) {
+    if (isStrictlyBlacklisted(messageText)) {
         return { category: "IRRELEVANT", reasoning: "Blocked by deterministic blacklist.", event_key: "", source: "", target: "", estimated_time: "" };
     }
 
@@ -387,7 +426,7 @@ async function checkForNewInfo(newMessages, lastPublished) {
     // Filter per message, rather than allowing one unrelated/blocked message to veto the whole event.
     const usableMessages = (newMessages || []).filter(m =>
         m && typeof m.text === "string" &&
-        !STRICT_BLACKLIST.some(word => m.text.includes(word))
+        !isStrictlyBlacklisted(m.text)
     );
     if (usableMessages.length === 0) {
         return { has_new_info: false, reasoning: "No usable messages in event." };
@@ -445,5 +484,7 @@ module.exports = {
     checkForNewInfo, 
     extractTargets, 
     extractTime, 
-    mergeAndCleanTargets 
+    mergeAndCleanTargets,
+    isStrictlyBlacklisted,
+    isRegionOnlyFollowUp,
 };
