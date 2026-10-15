@@ -25,7 +25,7 @@ function readCursorState(filePath, configuredChannelIds = [], fsImpl = fs) {
             // Number(null), Number(false), and Number("") all become zero and must not
             // make a corrupted cursor look like a valid first-run baseline.
             const hasValidType = typeof rawId === "number" ||
-                (typeof rawId === "string" && /^\\d+$/.test(rawId));
+                (typeof rawId === "string" && /^\d+$/.test(rawId));
             const id = hasValidType ? Number(rawId) : NaN;
             if (!Number.isSafeInteger(id) || id < 0) {
                 if (configuredIds.has(String(channelId))) {
