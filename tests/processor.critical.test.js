@@ -49,6 +49,47 @@ describe("critical processor regressions", () => {
         classifyMessage.mockResolvedValue({ ...launch });
     });
 
+    test("a later report for an already-published concurrent incident does not resend it as a new alert", async () => {
+        const iran = {
+            category: "LAUNCH_REPORT", reasoning: "Iran incident",
+            source: "איראן", target: "מרכז", estimated_time: "10:30",
+            reportedSource: "איראן", reportedTarget: "מרכז", reportedEstimatedTime: "10:30",
+        };
+        const lebanon = {
+            category: "LAUNCH_REPORT", reasoning: "Lebanon incident",
+            source: "לבנון", target: "צפון", estimated_time: "09:00",
+            reportedSource: "לבנון", reportedTarget: "צפון", reportedEstimatedTime: "09:00",
+        };
+        const iranDuplicateUpdate = {
+            category: "UPDATE_TO_LAST", reasoning: "repeat of existing Iran evidence",
+            source: "איראן", target: "מרכז", estimated_time: "10:30",
+            reportedSource: "איראן", reportedTarget: "מרכז", reportedEstimatedTime: "10:30",
+        };
+
+        classifyMessage
+            .mockResolvedValueOnce({ ...iran })
+            .mockResolvedValueOnce({ ...iran })
+            .mockResolvedValueOnce({ ...lebanon })
+            .mockResolvedValueOnce({ ...lebanon })
+            .mockResolvedValueOnce({ ...iranDuplicateUpdate });
+
+        await processMessage("channel-1", "Iran launch report 1", callbacks, 101);
+        await processMessage("channel-2", "Iran launch report 2", callbacks, 201);
+        await processMessage("channel-1", "Lebanon launch report 1", callbacks, 102);
+        await processMessage("channel-2", "Lebanon launch report 2", callbacks, 202);
+
+        expect(callbacks.alert).toHaveBeenCalledTimes(2);
+        expect(callbacks.alert).toHaveBeenNthCalledWith(1, "איראן", "מרכז", "10:30");
+        expect(callbacks.alert).toHaveBeenNthCalledWith(2, "לבנון", "צפון", "09:00");
+
+        // A repeat from the first incident must be compared to that incident's own
+        // publication baseline, not to whichever unrelated incident was published last.
+        await processMessage("channel-1", "Iran report repeated", callbacks, 103);
+
+        expect(callbacks.alert).toHaveBeenCalledTimes(2);
+        expect(callbacks.update).not.toHaveBeenCalled();
+    });
+
     test("one incident is stored under one canonical event, not three partial keys", async () => {
         await processMessage("channel-1", "report-1", callbacks, 101, 1767254400);
         expect(Object.keys(getActiveEvents())).toHaveLength(1);
