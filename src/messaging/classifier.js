@@ -286,6 +286,19 @@ async function classifyMessage(channelId, messageText, lastPublished, messageTim
     if (isStrictlyBlacklisted(messageText)) {
         return { category: "IRRELEVANT", reasoning: "Blocked by deterministic blacklist.", event_key: "", source: "", target: "", estimated_time: "" };
     }
+    // A pure region fragment can never establish a launch on its own. Return it as contextual
+    // evidence without spending a Gemini request; the processor will attach it only to one
+    // unique, recent, compatible incident.
+    if (isRegionOnlyFollowUp(messageText)) {
+        return {
+            category: "IRRELEVANT",
+            reasoning: "Region-only fragment requires contextual correlation.",
+            event_key: "",
+            source: "",
+            target: extractTargets(messageText),
+            estimated_time: "",
+        };
+    }
 
     const source = extractSource(messageText);
     const target = extractTargets(messageText);
