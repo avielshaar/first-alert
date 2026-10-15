@@ -8,7 +8,7 @@
  */
 
 const { log } = require("../utils/logger");
-const { classifyMessage, extractSource, extractTargets, extractTime } = require("./classifier");
+const { classifyMessage, extractSource, extractTargets, extractTime, isStrictlyBlacklisted, isRegionOnlyFollowUp } = require("./classifier");
 const {
     CONTEXT_WINDOW_MS,
     LAST_PUBLISHED_DEDUP_WINDOW_MS,
@@ -81,9 +81,19 @@ function loadProcessorState() {
         if (!Number.isSafeInteger(parsed.nextEventId) || parsed.nextEventId < 1) {
             throw new Error("invalid nextEventId in processor state file");
         }
-        if (parsed.lastPublished !== null && parsed.lastPublished !== undefined &&
-            (typeof parsed.lastPublished !== "object" || Array.isArray(parsed.lastPublished))) {
-            throw new Error("invalid lastPublished value in processor state file");
+        if (parsed.lastPublished !== null && parsed.lastPublished !== undefined) {
+            if (typeof parsed.lastPublished !== "object" || Array.isArray(parsed.lastPublished)) {
+                throw new Error("invalid lastPublished value in processor state file");
+            }
+            for (const field of ["source", "target", "estimated_time"]) {
+                if (typeof parsed.lastPublished[field] !== "string") {
+                    throw new Error("invalid lastPublished " + field + " in processor state file");
+                }
+            }
+            if (parsed.lastPublished.verificationVersion !== undefined &&
+                parsed.lastPublished.verificationVersion !== 1) {
+                throw new Error("unsupported lastPublished verificationVersion in processor state file");
+            }
         }
 
         const loadedEvents = {};
@@ -107,6 +117,16 @@ function loadProcessorState() {
                 typeof raw.source !== "string" || typeof raw.target !== "string" ||
                 typeof raw.estimated_time !== "string") {
                 throw new Error("invalid pending event fields for " + id);
+            }
+            if (raw.publishedBaseline !== undefined && raw.publishedBaseline !== null) {
+                if (typeof raw.publishedBaseline !== "object" || Array.isArray(raw.publishedBaseline) ||
+                    typeof raw.publishedBaseline.source !== "string" ||
+                    typeof raw.publishedBaseline.target !== "string" ||
+                    typeof raw.publishedBaseline.estimated_time !== "string" ||
+                    raw.publishedBaseline.verificationVersion !== 1 ||
+                    !Number.isFinite(raw.publishedBaseline.publishedAt)) {
+                    throw new Error("invalid publishedBaseline for " + id);
+                }
             }
 
             highestEventNumber = Math.max(highestEventNumber, Number(keyMatch[1]));
@@ -168,6 +188,51 @@ function getActiveEvents() { return activeEvents; }
 // their source, target, or time as verified facts; a new event must reconfirm those fields.
 function getVerifiedLastPublished() {
     return lastPublished && lastPublished.verificationVersion === 1 ? lastPublished : null;
+}
+
+// Each still-open published incident keeps its own baseline. The global baseline remains
+// useful for genuinely new incidents, but must not cause an older concurrent incident to
+// be re-published merely because another incident was published more recently.
+function getEventPublishedBaseline(event, fallbackBaseline = null, now = Date.now()) {
+    if (!event) return fallbackBaseline;
+    if (!event.publishedBaseline) {
+        // Older persisted events predate per-event baselines. Reuse the current global
+        // baseline only when there is positive evidence that it belongs to this event.
+        // Otherwise the baseline may belong to a different incident published later.
+        if (event.kind === "UPDATE_TO_LAST" && event.corroborationPending && fallbackBaseline) {
+            const sourceConflict = Boolean(
+                event.source && fallbackBaseline.source && event.source !== fallbackBaseline.source
+            );
+            const targetConflict = Boolean(
+                event.target && fallbackBaseline.target &&
+                !targetsOverlap(event.target, fallbackBaseline.target)
+            );
+            if (sourceConflict || targetConflict) return null;
+
+            const sourceMatches = Boolean(
+                event.source && fallbackBaseline.source && event.source === fallbackBaseline.source
+            );
+            const targetMatches = Boolean(
+                event.target && fallbackBaseline.target &&
+                targetsOverlap(event.target, fallbackBaseline.target)
+            );
+            const timeMatches = Boolean(
+                event.estimated_time && fallbackBaseline.estimated_time &&
+                event.estimated_time === fallbackBaseline.estimated_time
+            );
+            if (!sourceMatches && !targetMatches && !timeMatches) return null;
+        }
+        return fallbackBaseline;
+    }
+
+    const baseline = event.publishedBaseline;
+    const publishedAt = Number(baseline.publishedAt);
+    const validTimestamp = Number.isFinite(publishedAt) &&
+        publishedAt > 0 &&
+        publishedAt <= now + 60_000;
+    return validTimestamp && now - publishedAt < LAST_PUBLISHED_DEDUP_WINDOW_MS
+        ? baseline
+        : null;
 }
 
 // Expire the publication baseline, not the two-minute event-correlation window.
@@ -314,6 +379,7 @@ async function publishNewAlert(event, callbacks, verifiedFields) {
         verificationVersion: 1,
         publishedAt: Date.now(),
     };
+    event.publishedBaseline = { ...lastPublished };
     log(`[Dispatch] event=${event.id} | outcome=ALERT_DELIVERED | published_baseline={source:${JSON.stringify(lastPublished.source || "—")}, target:${JSON.stringify(lastPublished.target || "—")}, time:${JSON.stringify(lastPublished.estimated_time || "—")}}.`);
     delete event.deliveryPending;
 
@@ -329,19 +395,20 @@ async function publishNewAlert(event, callbacks, verifiedFields) {
     return persistProcessorState();
 }
 
-async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(event)) {
-    if (!lastPublished) return true;
+async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(event), publishedBaseline = getEventPublishedBaseline(event, lastPublished)) {
+    const baseline = publishedBaseline || getEventPublishedBaseline(event, lastPublished);
+    if (!baseline) return true;
 
-    const mergedTarget = mergeTargets(lastPublished.target, evidence.target);
-    const finalTarget = mergedTarget || lastPublished.target || "";
-    const finalTime = evidence.estimated_time || lastPublished.estimated_time || "";
-    const finalSource = evidence.source || lastPublished.source || "";
-    const hasNewSource = Boolean(finalSource && finalSource !== (lastPublished.source || ""));
-    const hasNewTarget = finalTarget !== (lastPublished.target || "");
-    const hasNewTime = Boolean(finalTime && finalTime !== lastPublished.estimated_time);
+    const mergedTarget = mergeTargets(baseline.target, evidence.target);
+    const finalTarget = mergedTarget || baseline.target || "";
+    const finalTime = evidence.estimated_time || baseline.estimated_time || "";
+    const finalSource = evidence.source || baseline.source || "";
+    const hasNewSource = Boolean(finalSource && finalSource !== (baseline.source || ""));
+    const hasNewTarget = finalTarget !== (baseline.target || "");
+    const hasNewTime = Boolean(finalTime && finalTime !== baseline.estimated_time);
 
     if (!hasNewSource && !hasNewTarget && !hasNewTime) {
-        const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+        const pendingFields = getPendingUncorroboratedFields(event, baseline);
         if (pendingFields.length > 0 || event.corroborationPending) {
             event.corroborationPending = true;
             if (pendingFields.length > 0) {
@@ -361,12 +428,12 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
         hasNewTarget && "target",
         hasNewTime && "time",
     ].filter(Boolean).join("+");
-    log(`[Dispatch] event=${event.id} | action=SEND_UPDATE | changed_fields=[${updateType}] | previous={source:${JSON.stringify(lastPublished.source || "—")}, target:${JSON.stringify(lastPublished.target || "—")}, time:${JSON.stringify(lastPublished.estimated_time || "—")}} | proposed_confirmed={source:${JSON.stringify(finalSource || "—")}, target:${JSON.stringify(finalTarget || "—")}, time:${JSON.stringify(finalTime || "—")}}.`);
+    log(`[Dispatch] event=${event.id} | action=SEND_UPDATE | changed_fields=[${updateType}] | previous={source:${JSON.stringify(baseline.source || "—")}, target:${JSON.stringify(baseline.target || "—")}, time:${JSON.stringify(baseline.estimated_time || "—")}} | proposed_confirmed={source:${JSON.stringify(finalSource || "—")}, target:${JSON.stringify(finalTarget || "—")}, time:${JSON.stringify(finalTime || "—")}}.`);
     let result = false;
     try {
         result = await callbacks.update(
             { source: finalSource, target: finalTarget, estimated_time: finalTime },
-            lastPublished,
+            baseline,
             updateType
         );
     } catch (error) {
@@ -382,17 +449,19 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
         return false;
     }
 
-    lastPublished = {
+    const nextBaseline = {
         source: finalSource,
         target: finalTarget,
         estimated_time: finalTime,
         verificationVersion: 1,
         publishedAt: Date.now(),
     };
+    event.publishedBaseline = { ...nextBaseline };
+    lastPublished = nextBaseline;
     log(`[Dispatch] event=${event.id} | outcome=UPDATE_DELIVERED | baseline_now={source:${JSON.stringify(finalSource || "—")}, target:${JSON.stringify(finalTarget || "—")}, time:${JSON.stringify(finalTime || "—")}}.`);
     delete event.deliveryPending;
 
-    const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+    const pendingFields = getPendingUncorroboratedFields(event, nextBaseline);
     event.corroborationPending = true;
     if (pendingFields.length > 0) {
         log(`[Verification] ${event.id} update sent using corroborated fields only; still waiting for: ${pendingFields.join(", ")}.`);
@@ -406,7 +475,10 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
 // source-only launch event. It is recorded as evidence, not treated as an alert on its own.
 function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTimestamp, now) {
     const text = String(messageText || "").trim();
-    if (!text || text.length > 25) return null;
+    if (!text || text.length > 60) return null;
+    // Only a genuine region-only fragment may contribute contextual evidence. Do not
+    // let blacklisted headlines (e.g. "נפגעים במרכז") alter an open incident.
+    if (isStrictlyBlacklisted(text) || !isRegionOnlyFollowUp(text)) return null;
 
     const source = safelyExtract(extractSource, text);
     const target = safelyExtract(extractTargets, text);
@@ -434,7 +506,8 @@ function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTime
         // A region that is already independently corroborated or already present in the
         // published baseline needs no new attachment.
         const corroboratedTargets = splitTargets(getCorroboratedFields(event).target);
-        const publishedTargets = splitTargets(published && published.target);
+        const eventBaseline = getEventPublishedBaseline(event, published, now);
+        const publishedTargets = splitTargets(eventBaseline && eventBaseline.target);
         if (
             corroboratedTargets.some(existing => targetsOverlap(existing, target)) ||
             publishedTargets.some(existing => targetsOverlap(existing, target))
@@ -491,7 +564,7 @@ async function processAttachedRegionFollowUp(event, callbacks, channelId, messag
         return false;
     }
 
-    const publishedBaseline = getVerifiedLastPublished();
+    const publishedBaseline = getEventPublishedBaseline(event, getVerifiedLastPublished());
     const evidence = getCorroboratedFields(event);
     if (event.channels.size < MIN_CHANNELS_TO_ACT) {
         log(`[Verification] event=${event.id} | attached follow-up recorded, but event-level confirmation is ${event.channels.size}/${MIN_CHANNELS_TO_ACT} channels | confirmed_source=${evidence.source || "—"} | confirmed_target=${evidence.target || "—"} | waiting for another configured channel.`);
@@ -581,12 +654,33 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
         return false;
     }
 
-    // Updates must also be corroborated by multiple configured channels. One channel cannot
-    // bypass the confirmation rule and publish an unverified change immediately.
-    if (classification.category === "UPDATE_TO_LAST" && !publishedBaseline) return true;
-
+    // An incident may have been published before a different, concurrent incident.
+    // Compare matched events to their own baseline, not to the most recent global publication.
     const kind = classification.category;
     const matchedEvent = findMatchingEvent(classification, kind, activeEvents);
+    const eventBaseline = matchedEvent
+        ? getEventPublishedBaseline(matchedEvent, publishedBaseline, now)
+        : publishedBaseline;
+
+    // For state files created before per-event baselines existed, a published event whose
+    // baseline cannot be matched to the global one cannot safely be re-published as new.
+    // Ignore this message for that short legacy event window rather than creating a duplicate.
+    const legacyPublishedWithoutBaseline = Boolean(
+        matchedEvent &&
+        matchedEvent.kind === "UPDATE_TO_LAST" &&
+        matchedEvent.corroborationPending &&
+        !matchedEvent.publishedBaseline &&
+        !eventBaseline
+    );
+    if (legacyPublishedWithoutBaseline) {
+        log(`[Dedup] ${matchedEvent.id} is a legacy published event whose own baseline cannot be recovered; ignoring the ambiguous repeat to avoid a duplicate alert.`, "WARN");
+        return true;
+    }
+
+    // Updates require a known baseline for the event being updated. If there is no matching
+    // published incident, do not allow an update classification to create a new event.
+    if (classification.category === "UPDATE_TO_LAST" && !eventBaseline) return true;
+
     const event = matchedEvent || createEvent(classification, kind, now);
     mergeClassificationIntoEvent(event, classification);
     addMessageToEvent(event, channelId, messageText, messageId, messageTimestamp, now, classification);
@@ -597,14 +691,14 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     }
 
     const evidence = getCorroboratedFields(event);
-    const pendingFields = getPendingUncorroboratedFields(event, publishedBaseline);
+    const pendingFields = getPendingUncorroboratedFields(event, eventBaseline);
     log(`[Correlation] ${messageRef} | action=${matchedEvent ? "MERGE_INTO_EXISTING" : "CREATE_EVENT"} | event=${event.id} | event_kind=${event.kind} | channels=${event.channels.size}/${MIN_CHANNELS_TO_ACT} required [${[...event.channels].join(", ")}] | stored_messages=${event.messages.length} | confirmed_fields={source:${JSON.stringify(evidence.source || "—")}, target:${JSON.stringify(evidence.target || "—")}, time:${JSON.stringify(evidence.estimated_time || "—")}} | pending_field_verification=[${pendingFields.join(", ") || "none"}].`);
     if (event.channels.size < MIN_CHANNELS_TO_ACT) {
         log(`[Verification] event=${event.id} | event confirmation=${event.channels.size}/${MIN_CHANNELS_TO_ACT} channels; waiting for ${MIN_CHANNELS_TO_ACT - event.channels.size} additional independent channel(s).`);
         return true;
     }
 
-    if (!publishedBaseline) {
+    if (!eventBaseline) {
         // Do not block a corroborated incident just because one optional field (usually
         // the target region) has only one channel's support. Publish only independently
         // corroborated source/target fields; unverified fields remain blank and may be
@@ -619,9 +713,9 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
         return publishNewAlert(event, callbacks, evidence);
     }
 
-    if (isDifferentIncident(evidence, publishedBaseline)) {
+    if (isDifferentIncident(evidence, eventBaseline)) {
         if (!evidence.target) {
-            const pendingFields = getPendingUncorroboratedFields(event, lastPublished);
+            const pendingFields = getPendingUncorroboratedFields(event, eventBaseline);
             log(`[Verification] ${event.id} appears different, but its target is not confirmed by two channels` +
                 (pendingFields.length ? ` (pending: ${pendingFields.join(", ")}).` : "."));
             return true;
@@ -631,7 +725,7 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     }
 
     // New alerts and tactical updates use the same per-field corroboration.
-    return publishUpdate(event, callbacks, evidence);
+    return publishUpdate(event, callbacks, evidence, eventBaseline);
 }
 
 module.exports = {

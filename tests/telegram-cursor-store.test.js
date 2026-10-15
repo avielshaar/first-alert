@@ -62,6 +62,20 @@ describe("Telegram cursor persistence", () => {
         expect(result.initializedChannels.size).toBe(0);
     });
 
+    test.each([null, "", false, true, {}, [], "1e3", -1, 1.2])(
+        "rejects malformed configured cursor value %p instead of coercing it",
+        rawCursor => {
+            const { file } = temporaryFile();
+            fs.writeFileSync(file, JSON.stringify({ "-1001": rawCursor }));
+
+            const result = readCursorState(file, ["-1001"]);
+
+            expect(result.error).toContain("invalid cursor for configured channel -1001");
+            expect(result.cursors).toEqual({});
+            expect(result.initializedChannels.size).toBe(0);
+        }
+    );
+
     test("ignores invalid stale entries for channels no longer configured", () => {
         const { file } = temporaryFile();
         fs.writeFileSync(file, JSON.stringify({ "-1001": 123, "-1999": "invalid" }));
@@ -81,6 +95,18 @@ describe("Telegram cursor persistence", () => {
         expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(next);
         expect(fs.existsSync(file + ".tmp")).toBe(false);
     });
+
+    test.each([null, "", false, true, {}, [], "1e3", -1, 1.2, NaN])(
+        "rejects malformed cursor write input %p",
+        rawCursor => {
+            const { file } = temporaryFile();
+            fs.writeFileSync(file, JSON.stringify({ "-1001": 123 }));
+
+            expect(() => writeCursorState(file, { "-1001": 123 }, "-1001", rawCursor))
+                .toThrow("Invalid Telegram message cursor for -1001");
+            expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ "-1001": 123 });
+        }
+    );
 
     test("rejects invalid cursor values without modifying persisted state", () => {
         const { file } = temporaryFile();

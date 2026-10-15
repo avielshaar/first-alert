@@ -8,6 +8,8 @@ jest.mock("../src/messaging/classifier", () => ({
     extractSource: jest.fn(text => /איראן/.test(text) ? "איראן" : /לבנון/.test(text) ? "לבנון" : ""),
     extractTargets: jest.fn(text => /מרכז|גוש דן|תל אביב/.test(text) ? "מרכז" : /דרום/.test(text) ? "דרום" : /צפון/.test(text) ? "צפון" : ""),
     extractTime: jest.fn(text => (String(text).match(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/) || [])[0] || ""),
+    isStrictlyBlacklisted: jest.fn(text => ["נפגעים", "אין סכנה", "הוסר החשש", "שריפה", "תיעוד"].some(word => String(text).includes(word))),
+    isRegionOnlyFollowUp: jest.fn(text => /^(?:(?:לעבר|לאזור|באזור|אזור|לכיוון|ולאזור|ובאזור|אל|ול|וב|ל|ב)[ -]*)?ה?(?:מרכז|דרום|צפון)(?:\s*\([^)]*\))?[\s.,!?…]*$/u.test(String(text).trim())),
 }));
 const { classifyMessage, checkForNewInfo } = require("../src/messaging/classifier");
 const {
@@ -45,6 +47,58 @@ describe("critical processor regressions", () => {
         callbacks.update.mockResolvedValue(true);
         checkForNewInfo.mockResolvedValue({ has_new_info: false, reasoning: "duplicate" });
         classifyMessage.mockResolvedValue({ ...launch });
+    });
+
+    test.each([
+        ["Iran", "Lebanon"],
+        ["Lebanon", "Iran"],
+    ])("a repeat for the older %s incident is not resent after %s publishes", async (firstName, secondName) => {
+        const incidents = {
+            Iran: {
+                category: "LAUNCH_REPORT", reasoning: "Iran incident",
+                source: "איראן", target: "מרכז", estimated_time: "10:30",
+                reportedSource: "איראן", reportedTarget: "מרכז", reportedEstimatedTime: "10:30",
+            },
+            Lebanon: {
+                category: "LAUNCH_REPORT", reasoning: "Lebanon incident",
+                source: "לבנון", target: "צפון", estimated_time: "09:00",
+                reportedSource: "לבנון", reportedTarget: "צפון", reportedEstimatedTime: "09:00",
+            },
+        };
+        const first = incidents[firstName];
+        const second = incidents[secondName];
+        const repeatedFirst = {
+            ...first,
+            category: "UPDATE_TO_LAST",
+            reasoning: "repeat of existing incident evidence",
+        };
+
+        classifyMessage
+            .mockResolvedValueOnce({ ...first })
+            .mockResolvedValueOnce({ ...first })
+            .mockResolvedValueOnce({ ...second })
+            .mockResolvedValueOnce({ ...second })
+            .mockResolvedValueOnce(repeatedFirst);
+
+        await processMessage("channel-1", firstName + " launch report 1", callbacks, 101);
+        await processMessage("channel-2", firstName + " launch report 2", callbacks, 201);
+        await processMessage("channel-1", secondName + " launch report 1", callbacks, 102);
+        await processMessage("channel-2", secondName + " launch report 2", callbacks, 202);
+
+        expect(callbacks.alert).toHaveBeenCalledTimes(2);
+        expect(callbacks.alert).toHaveBeenNthCalledWith(
+            1, first.source, first.target, first.estimated_time
+        );
+        expect(callbacks.alert).toHaveBeenNthCalledWith(
+            2, second.source, second.target, second.estimated_time
+        );
+
+        // A repeat from the first incident must use its own baseline, regardless of
+        // which of the two incidents was most recently published.
+        await processMessage("channel-1", firstName + " report repeated", callbacks, 103);
+
+        expect(callbacks.alert).toHaveBeenCalledTimes(2);
+        expect(callbacks.update).not.toHaveBeenCalled();
     });
 
     test("one incident is stored under one canonical event, not three partial keys", async () => {

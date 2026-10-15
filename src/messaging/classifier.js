@@ -38,6 +38,45 @@ const SOURCES = [
     { base: "עזה", keywords: ["עזה", "רצועת"] }
 ];
 
+function isStrictlyBlacklisted(text) {
+    const message = typeof text === "string" ? text : String(text ?? "");
+    return STRICT_BLACKLIST.some(word => message.includes(word));
+}
+
+function isRegionOnlyFollowUp(text) {
+    if (typeof text !== "string") return false;
+
+    const normalized = text.trim()
+        .replace(/[״“”]/gu, '"')
+        .replace(/\s+/gu, " ")
+        .replace(/[\s.,!?;:…]+$/gu, "");
+    if (!normalized || normalized.length > 60) return false;
+
+    const prefixes = [
+        "", "ל", "ל-", "ב", "ב-", "ול", "ול-", "וב", "וב-",
+        "לעבר ", "לאזור ", "באזור ", "אזור ", "לכיוון ", "אל ",
+        "ולאזור ", "ובאזור ",
+    ];
+
+    for (const region of REGION_MAP) {
+        for (const alias of region.aliases) {
+            const escapedAlias = alias
+                .split("").map(character => "\\^$.*+?()[]{}|".includes(character) ? "\\" + character : character).join("")
+                .replace(/"/gu, '["״]');
+            for (const prefix of prefixes) {
+                const pattern = new RegExp(
+                    "^(?:" + prefix + ")ה?" + escapedAlias +
+                    "(?:\\s*\\([^()]{1,40}\\))?$",
+                    "u"
+                );
+                if (pattern.test(normalized)) return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 const REGION_MAP = [
     { base: "מרכז", aliases: ["מרכז", "גוש דן", "תל אביב", "ת\"א", "הרצליה"] },
     { base: "דרום", aliases: ["דרום", "עוטף", "באר שבע", "ב\"ש", "אשדוד", "אשקלון"] },
@@ -115,51 +154,170 @@ function extractTargets(text) {
 }
 
 function extractTime(text, referenceTime = new Date()) {
+    const sourceText = typeof text === "string" ? text : String(text ?? "");
     const base = referenceTime instanceof Date
         ? new Date(referenceTime.getTime())
-        : new Date(typeof referenceTime === "number" ? referenceTime : Date.now());
+        : new Date(
+            typeof referenceTime === "number"
+                ? (referenceTime < 1e12 ? referenceTime * 1000 : referenceTime)
+                : (typeof referenceTime === "string" ? referenceTime : Date.now())
+        );
+    if (!Number.isFinite(base.getTime())) base.setTime(Date.now());
 
-    // Absolute HH:MM is kept as provided; do not reinterpret it relative to the current clock.
-    const absMatch = text.match(/(?<!\d)([0-1]?[0-9]|2[0-3]):([0-5][0-9])(?!\d)/);
-    if (absMatch) return `${absMatch[1].padStart(2, "0")}:${absMatch[2]}`;
+    const formatClockTime = (date) => date.toLocaleTimeString("he-IL", {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "Asia/Jerusalem",
+    });
+    const timeAfterMinutes = (minutes) =>
+        formatClockTime(new Date(base.getTime() + minutes * 60 * 1000));
 
-    const standaloneHour = text.match(/(?:בעוד|עוד|בתוך|תוך)\s+(?:שעה|שעתיים)(?![\u0590-\u05FF])/);
-    if (standaloneHour) {
-        const mins = standaloneHour[0].includes("שעתיים") ? 120 : 60;
-        base.setMinutes(base.getMinutes() + mins);
-        return base.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jerusalem" });
+    function isNegatedEta(index) {
+        // Check only the current clause. This avoids reading "לא יגיעו בעוד 10 דקות"
+        // as an affirmative ETA while allowing a later affirmative clause to be parsed.
+        const clausePrefix = sourceText.slice(0, index).split(/[,.!?;:\n]/u).pop();
+        return /(?:^|\s)(?:לא|שלא|אין|אינו|איננו|אינה|אינם|אינן)(?:\s+\S+){0,2}\s*$/u.test(clausePrefix);
     }
 
-    const relMatch = text.match(/(?:בעוד|עוד|בתוך|תוך|יגיעו ב|זמן הגעה)?\s*(?:כ-|-)?(\d+|אחת|אחד|שניים|שתיים|שלוש|שלושה|ארבע|ארבעה|חמש|חמישה|שש|שישה|שבע|שבעה|שמונה|תשע|עשר|עשרה|עשרים|רבע|חצי)\s*(דקות|דקה|שעה|שעות|שעתיים)(?![\u0590-\u05FF])/);
-    if (!relMatch) return "";
+    // Prefer an absolute clock time explicitly tied to arrival/ETA language over
+    // unrelated timestamps elsewhere in the same Telegram message.
+    const clockToken = "([01]?\\d|2[0-3]):([0-5]\\d)";
+    const explicitEtaClock = new RegExp(
+        "(?:זמן\\s*הגעה(?:\\s*(?:משוער(?:ת)?|צפוי(?:ה)?))?|צפי\\s*הגעה|הגעה\\s*(?:משוערת|צפויה)|זמן\\s*משוער|" +
+        "צפוי(?:ה)?\\s+להגיע|צפויים?\\s+להגיע|יגיעו?|יגיע)" +
+        "\\s*(?:(?:הוא|היא)\\s*)?(?:בשעה\\s*)?(?:ב\\s*)?[-–:=]?\\s*" +
+        "(?<!\\d)" + clockToken + "(?!\\d)",
+        "giu"
+    );
+    const explicitTimes = [];
+    let hasNegatedExplicitEta = false;
+    for (const match of sourceText.matchAll(explicitEtaClock)) {
+        if (isNegatedEta(match.index)) {
+            hasNegatedExplicitEta = true;
+            continue;
+        }
+        explicitTimes.push(match[1].padStart(2, "0") + ":" + match[2]);
+    }
+    const uniqueExplicitTimes = [...new Set(explicitTimes)];
+    if (uniqueExplicitTimes.length === 1) return uniqueExplicitTimes[0];
+    if (uniqueExplicitTimes.length > 1) {
+        // Conflicting explicit ETA times are ambiguous; never guess.
+        return "";
+    }
 
-    const numberMap = {
-        "אחת": 1, "אחד": 1, "שניים": 2, "שתיים": 2,
-        "שלוש": 3, "שלושה": 3, "ארבע": 4, "ארבעה": 4,
-        "חמש": 5, "חמישה": 5, "שש": 6, "שישה": 6,
-        "שבע": 7, "שבעה": 7, "שמונה": 8, "תשע": 9,
+    // Parse natural Hebrew durations longest-first so "שעה וחצי" isn't truncated
+    // to "שעה", and recognize only future/ETA-anchored durations. A past duration
+    // such as "לפני 10 דקות" is elapsed time, not an estimated arrival time.
+    const numberToken =
+        "(?:\\d+(?:[.,]\\d+)?|אחת\\s+עשרה|אחד\\s+עשר|שתים\\s+עשרה|שנים\\s+עשר|" +
+        "שניים|שתיים|שני|שלושה|שלוש|ארבעה|ארבע|חמישה|חמש|שישה|שש|שבעה|שבע|" +
+        "שמונה|תשעה|תשע|עשרה|עשר|עשרים|אחת|אחד|רבע|חצי)";
+    const durationPattern =
+        "(?:שעתיים\\s+(?:וחצי|ורבע)|שעה\\s+(?:וחצי|ורבע)|חצי\\s+שעה|רבע\\s+שעה|" +
+        "שעתיים|שעה|דקה|" + numberToken + "\\s*(?:דקות?|דקה|דק(?:ות)?[׳']?|שעות?))";
+
+    const hebrewNumbers = {
+        "אחת": 1, "אחד": 1, "שניים": 2, "שתיים": 2, "שני": 2,
+        "שלושה": 3, "שלוש": 3, "ארבעה": 4, "ארבע": 4,
+        "חמישה": 5, "חמש": 5, "שישה": 6, "שש": 6,
+        "שבעה": 7, "שבע": 7, "שמונה": 8, "תשעה": 9, "תשע": 9,
         "עשר": 10, "עשרה": 10, "עשרים": 20,
+        "אחת עשרה": 11, "אחד עשר": 11, "שתים עשרה": 12, "שנים עשר": 12,
         "רבע": 15, "חצי": 30,
     };
-    const numStr = relMatch[1];
-    const unit = relMatch[2];
-    const amount = Number.isFinite(Number(numStr)) ? Number(numStr) : numberMap[numStr];
-    if (!amount || amount <= 0) return "";
 
-    let mins;
-    if (unit === "שעתיים") mins = 120;
-    else if (unit === "שעה" && numStr === "חצי") mins = 30;
-    else if (unit === "שעה" && numStr === "רבע") mins = 15;
-    else if (unit === "שעה" || unit === "שעות") mins = amount * 60;
-    else mins = amount;
+    function durationToMinutes(rawDuration) {
+        const duration = rawDuration.trim().replace(/\s+/g, " ");
+        if (duration === "שעה") return 60;
+        if (duration === "דקה") return 1;
+        if (duration === "שעתיים") return 120;
+        if (duration === "חצי שעה") return 30;
+        if (duration === "רבע שעה") return 15;
+        if (duration === "שעה וחצי") return 90;
+        if (duration === "שעתיים וחצי") return 150;
+        if (duration === "שעה ורבע") return 75;
+        if (duration === "שעתיים ורבע") return 135;
 
-    base.setMinutes(base.getMinutes() + mins);
-    return base.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jerusalem" });
+        const match = duration.match(/^(.+?)\s*(דקות?|דקה|דק(?:ות)?[׳']?|שעות?)$/u);
+        if (!match) return null;
+        const token = match[1].trim();
+        const normalizedNumber = token.replace(",", ".");
+        const amount = /^\d+(?:\.\d+)?$/.test(normalizedNumber)
+            ? Number(normalizedNumber)
+            : hebrewNumbers[token];
+        if (!Number.isFinite(amount) || amount <= 0) return null;
+
+        const unit = match[2];
+        const minutes = unit.startsWith("ש") ? amount * 60 : amount;
+        return Number.isFinite(minutes) && minutes > 0 ? minutes : null;
+    }
+
+    const relativeEtaPatterns = [
+        new RegExp(
+            "(?:בעוד|עוד|בתוך|תוך)\\s*(?:כ\\s*[-־]?\\s*)?(" + durationPattern + ")",
+            "giu"
+        ),
+        new RegExp(
+            "(?:זמן\\s*הגעה(?:\\s*(?:משוער(?:ת)?|צפוי(?:ה)?))?|צפי\\s*הגעה|הגעה\\s*(?:משוערת|צפויה)|זמן\\s*משוער|ETA)" +
+            "\\s*[:：=–-]?\\s*(?:בעוד\\s*)?(" + durationPattern + ")",
+            "giu"
+        ),
+        new RegExp(
+            "(?:צפוי(?:ה)?\\s+להגיע|צפויים?\\s+להגיע|יגיעו?|יגיע)" +
+            "\\s*(?:בעוד|תוך|בתוך|ב)?\\s*(" + durationPattern + ")",
+            "giu"
+        ),
+    ];
+
+    const relativeMinutes = new Set();
+    let hasNegatedRelativeEta = false;
+    for (const pattern of relativeEtaPatterns) {
+        for (const match of sourceText.matchAll(pattern)) {
+            if (isNegatedEta(match.index)) {
+                hasNegatedRelativeEta = true;
+                continue;
+            }
+            const minutes = durationToMinutes(match[1]);
+            if (minutes !== null) relativeMinutes.add(minutes);
+        }
+    }
+    if (relativeMinutes.size === 1) return timeAfterMinutes([...relativeMinutes][0]);
+    if (relativeMinutes.size > 1) {
+        // A message containing multiple different future durations may describe
+        // separate events. Without a single unambiguous ETA, omit the time.
+        return "";
+    }
+
+    // A rejected negated time must not fall through to the unlabelled-clock fallback.
+    if (hasNegatedExplicitEta || hasNegatedRelativeEta) return "";
+
+    // Backward compatibility: accept a lone absolute time even if the message
+    // doesn't label it as an ETA. If there are multiple unlabelled clock times,
+    // their meaning is ambiguous, so omit the field rather than choosing the first.
+    const anyClockTime = new RegExp("(?<!\\d)" + clockToken + "(?!\\d)", "g");
+    const absoluteTimes = [];
+    for (const match of sourceText.matchAll(anyClockTime)) {
+        absoluteTimes.push(match[1].padStart(2, "0") + ":" + match[2]);
+    }
+    const uniqueAbsoluteTimes = [...new Set(absoluteTimes)];
+    return uniqueAbsoluteTimes.length === 1 ? uniqueAbsoluteTimes[0] : "";
 }
-
 async function classifyMessage(channelId, messageText, lastPublished, messageTimestamp = null) {
-    if (STRICT_BLACKLIST.some(word => messageText.includes(word))) {
+    if (isStrictlyBlacklisted(messageText)) {
         return { category: "IRRELEVANT", reasoning: "Blocked by deterministic blacklist.", event_key: "", source: "", target: "", estimated_time: "" };
+    }
+    // A pure region fragment can never establish a launch on its own. Return it as contextual
+    // evidence without spending a Gemini request; the processor will attach it only to one
+    // unique, recent, compatible incident.
+    if (isRegionOnlyFollowUp(messageText)) {
+        return {
+            category: "IRRELEVANT",
+            reasoning: "Region-only fragment requires contextual correlation.",
+            event_key: "",
+            source: "",
+            target: extractTargets(messageText),
+            estimated_time: "",
+        };
     }
 
     const source = extractSource(messageText);
@@ -301,7 +459,7 @@ async function checkForNewInfo(newMessages, lastPublished) {
     // Filter per message, rather than allowing one unrelated/blocked message to veto the whole event.
     const usableMessages = (newMessages || []).filter(m =>
         m && typeof m.text === "string" &&
-        !STRICT_BLACKLIST.some(word => m.text.includes(word))
+        !isStrictlyBlacklisted(m.text)
     );
     if (usableMessages.length === 0) {
         return { has_new_info: false, reasoning: "No usable messages in event." };
@@ -359,5 +517,7 @@ module.exports = {
     checkForNewInfo, 
     extractTargets, 
     extractTime, 
-    mergeAndCleanTargets 
+    mergeAndCleanTargets,
+    isStrictlyBlacklisted,
+    isRegionOnlyFollowUp,
 };
