@@ -7,6 +7,8 @@ const atTenAm = new Date("2026-01-01T10:00:00+02:00");
 
 describe("extractTime — ETA parsing and ambiguous input", () => {
     test.each([
+        ["בעוד דקה", "10:01"],
+        ["בעוד 1 דקה", "10:01"],
         ["בעוד 10 דקות", "10:10"],
         ["תוך 5 דקות", "10:05"],
         ["עוד עשר דקות", "10:10"],
