@@ -8,7 +8,7 @@
  */
 
 const { log } = require("../utils/logger");
-const { classifyMessage, extractSource, extractTargets, extractTime } = require("./classifier");
+const { classifyMessage, extractSource, extractTargets, extractTime, isStrictlyBlacklisted, isRegionOnlyFollowUp } = require("./classifier");
 const {
     CONTEXT_WINDOW_MS,
     LAST_PUBLISHED_DEDUP_WINDOW_MS,
@@ -406,7 +406,10 @@ async function publishUpdate(event, callbacks, evidence = getCorroboratedFields(
 // source-only launch event. It is recorded as evidence, not treated as an alert on its own.
 function attachRegionOnlyFollowUp(channelId, messageText, messageId, messageTimestamp, now) {
     const text = String(messageText || "").trim();
-    if (!text || text.length > 25) return null;
+    if (!text || text.length > 60) return null;
+    // Only a genuine region-only fragment may contribute contextual evidence. Do not
+    // let blacklisted headlines (e.g. "נפגעים במרכז") alter an open incident.
+    if (isStrictlyBlacklisted(text) || !isRegionOnlyFollowUp(text)) return null;
 
     const source = safelyExtract(extractSource, text);
     const target = safelyExtract(extractTargets, text);
