@@ -51,7 +51,9 @@ function readCursorState(filePath, configuredChannelIds = [], fsImpl = fs) {
  * Atomically persist one cursor. Memory is updated by the caller only after this succeeds.
  */
 function writeCursorState(filePath, currentCursors, channelId, messageId, fsImpl = fs) {
-    const numericId = Number(messageId);
+    const hasValidType = typeof messageId === "number" ||
+        (typeof messageId === "string" && /^\d+$/.test(messageId));
+    const numericId = hasValidType ? Number(messageId) : NaN;
     if (!Number.isSafeInteger(numericId) || numericId < 0) {
         throw new Error("Invalid Telegram message cursor for " + channelId);
     }
