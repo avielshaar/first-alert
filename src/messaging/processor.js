@@ -194,7 +194,28 @@ function getVerifiedLastPublished() {
 // useful for genuinely new incidents, but must not cause an older concurrent incident to
 // be re-published merely because another incident was published more recently.
 function getEventPublishedBaseline(event, fallbackBaseline = null, now = Date.now()) {
-    if (!event || !event.publishedBaseline) return fallbackBaseline;
+    if (!event) return fallbackBaseline;
+    if (!event.publishedBaseline) {
+        // Older persisted events predate per-event baselines. Reuse the current global
+        // baseline only when there is positive evidence that it belongs to this event.
+        // Otherwise the baseline may belong to a different incident published later.
+        if (event.kind === "UPDATE_TO_LAST" && event.corroborationPending && fallbackBaseline) {
+            const sourceMatches = Boolean(
+                event.source && fallbackBaseline.source && event.source === fallbackBaseline.source
+            );
+            const targetMatches = Boolean(
+                event.target && fallbackBaseline.target &&
+                targetsOverlap(event.target, fallbackBaseline.target)
+            );
+            const timeMatches = Boolean(
+                event.estimated_time && fallbackBaseline.estimated_time &&
+                event.estimated_time === fallbackBaseline.estimated_time
+            );
+            if (!sourceMatches && !targetMatches && !timeMatches) return null;
+        }
+        return fallbackBaseline;
+    }
+
     const baseline = event.publishedBaseline;
     const publishedAt = Number(baseline.publishedAt);
     const validTimestamp = Number.isFinite(publishedAt) &&
@@ -631,6 +652,21 @@ async function processMessage(channelId, messageText, callbacks, messageId = nul
     const eventBaseline = matchedEvent
         ? getEventPublishedBaseline(matchedEvent, publishedBaseline, now)
         : publishedBaseline;
+
+    // For state files created before per-event baselines existed, a published event whose
+    // baseline cannot be matched to the global one cannot safely be re-published as new.
+    // Ignore this message for that short legacy event window rather than creating a duplicate.
+    const legacyPublishedWithoutBaseline = Boolean(
+        matchedEvent &&
+        matchedEvent.kind === "UPDATE_TO_LAST" &&
+        matchedEvent.corroborationPending &&
+        !matchedEvent.publishedBaseline &&
+        !eventBaseline
+    );
+    if (legacyPublishedWithoutBaseline) {
+        log(`[Dedup] ${matchedEvent.id} is a legacy published event whose own baseline cannot be recovered; ignoring the ambiguous repeat to avoid a duplicate alert.`, "WARN");
+        return true;
+    }
 
     // Updates require a known baseline for the event being updated. If there is no matching
     // published incident, do not allow an update classification to create a new event.
