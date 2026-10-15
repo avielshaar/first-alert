@@ -135,12 +135,12 @@ function extractTime(text, referenceTime = new Date()) {
 
     // Prefer an absolute clock time explicitly tied to arrival/ETA language over
     // unrelated timestamps elsewhere in the same Telegram message.
-    const clockToken = "([01]?\\\\d|2[0-3]):([0-5]\\\\d)";
+    const clockToken = "([01]?\\d|2[0-3]):([0-5]\\d)";
     const explicitEtaClock = new RegExp(
-        "(?:זמן\\\\s*הגעה|צפי\\\\s*הגעה|הגעה\\\\s*(?:משוערת|צפויה)|זמן\\\\s*משוער|" +
-        "צפוי(?:ה)?\\\\s+להגיע|צפויים?\\\\s+להגיע|יגיעו?|יגיע)" +
-        "\\\\s*(?:(?:הוא|היא)\\\\s*)?(?:בשעה\\\\s*)?(?:ב\\\\s*)?[-–:=]?\\\\s*" +
-        clockToken + "(?!\\\\d)",
+        "(?:זמן\\s*הגעה|צפי\\s*הגעה|הגעה\\s*(?:משוערת|צפויה)|זמן\\s*משוער|" +
+        "צפוי(?:ה)?\\s+להגיע|צפויים?\\s+להגיע|יגיעו?|יגיע)" +
+        "\\s*(?:(?:הוא|היא)\\s*)?(?:בשעה\\s*)?(?:ב\\s*)?[-–:=]?\\s*" +
+        clockToken + "(?!\\d)",
         "giu"
     );
     const explicitTimes = [];
@@ -158,12 +158,12 @@ function extractTime(text, referenceTime = new Date()) {
     // to "שעה", and recognize only future/ETA-anchored durations. A past duration
     // such as "לפני 10 דקות" is elapsed time, not an estimated arrival time.
     const numberToken =
-        "(?:\\\\d+(?:[.,]\\\\d+)?|אחת\\\\s+עשרה|אחד\\\\s+עשר|שתים\\\\s+עשרה|שנים\\\\s+עשר|" +
+        "(?:\\d+(?:[.,]\\d+)?|אחת\\s+עשרה|אחד\\s+עשר|שתים\\s+עשרה|שנים\\s+עשר|" +
         "שניים|שתיים|שני|שלושה|שלוש|ארבעה|ארבע|חמישה|חמש|שישה|שש|שבעה|שבע|" +
         "שמונה|תשעה|תשע|עשרה|עשר|עשרים|אחת|אחד|רבע|חצי)";
     const durationPattern =
-        "(?:שעתיים\\\\s+(?:וחצי|ורבע)|שעה\\\\s+(?:וחצי|ורבע)|חצי\\\\s+שעה|רבע\\\\s+שעה|" +
-        "שעתיים|שעה|" + numberToken + "\\\\s*(?:דקות?|דק(?:ות)?[׳']?|שעות?))";
+        "(?:שעתיים\\s+(?:וחצי|ורבע)|שעה\\s+(?:וחצי|ורבע)|חצי\\s+שעה|רבע\\s+שעה|" +
+        "שעתיים|שעה|" + numberToken + "\\s*(?:דקות?|דק(?:ות)?[׳']?|שעות?))";
 
     const hebrewNumbers = {
         "אחת": 1, "אחד": 1, "שניים": 2, "שתיים": 2, "שני": 2,
@@ -176,7 +176,7 @@ function extractTime(text, referenceTime = new Date()) {
     };
 
     function durationToMinutes(rawDuration) {
-        const duration = rawDuration.trim().replace(/\\\\s+/g, " ");
+        const duration = rawDuration.trim().replace(/\\s+/g, " ");
         if (duration === "שעה") return 60;
         if (duration === "שעתיים") return 120;
         if (duration === "חצי שעה") return 30;
@@ -186,11 +186,11 @@ function extractTime(text, referenceTime = new Date()) {
         if (duration === "שעה ורבע") return 75;
         if (duration === "שעתיים ורבע") return 135;
 
-        const match = duration.match(/^(.+?)\\\\s*(דקות?|דק(?:ות)?[׳']?|שעות?)$/u);
+        const match = duration.match(/^(.+?)\\s*(דקות?|דק(?:ות)?[׳']?|שעות?)$/u);
         if (!match) return null;
         const token = match[1].trim();
         const normalizedNumber = token.replace(",", ".");
-        const amount = /^\\\\d+(?:\\\\.\\\\d+)?$/.test(normalizedNumber)
+        const amount = /^\\d+(?:\\.\\d+)?$/.test(normalizedNumber)
             ? Number(normalizedNumber)
             : hebrewNumbers[token];
         if (!Number.isFinite(amount) || amount <= 0) return null;
@@ -202,17 +202,17 @@ function extractTime(text, referenceTime = new Date()) {
 
     const relativeEtaPatterns = [
         new RegExp(
-            "(?:בעוד|עוד|בתוך|תוך)\\\\s*(?:כ\\\\s*[-־]?\\\\s*)?(" + durationPattern + ")",
+            "(?:בעוד|עוד|בתוך|תוך)\\s*(?:כ\\s*[-־]?\\s*)?(" + durationPattern + ")",
             "giu"
         ),
         new RegExp(
-            "(?:זמן\\\\s*הגעה|צפי\\\\s*הגעה|הגעה\\\\s*(?:משוערת|צפויה)|זמן\\\\s*משוער|ETA)" +
-            "\\\\s*[:：=–-]?\\\\s*(?:בעוד\\\\s*)?(" + durationPattern + ")",
+            "(?:זמן\\s*הגעה|צפי\\s*הגעה|הגעה\\s*(?:משוערת|צפויה)|זמן\\s*משוער|ETA)" +
+            "\\s*[:：=–-]?\\s*(?:בעוד\\s*)?(" + durationPattern + ")",
             "giu"
         ),
         new RegExp(
-            "(?:צפוי(?:ה)?\\\\s+להגיע|צפויים?\\\\s+להגיע|יגיעו?|יגיע)" +
-            "\\\\s*(?:בעוד|תוך|בתוך|ב)?\\\\s*(" + durationPattern + ")",
+            "(?:צפוי(?:ה)?\\s+להגיע|צפויים?\\s+להגיע|יגיעו?|יגיע)" +
+            "\\s*(?:בעוד|תוך|בתוך|ב)?\\s*(" + durationPattern + ")",
             "giu"
         ),
     ];
@@ -234,7 +234,7 @@ function extractTime(text, referenceTime = new Date()) {
     // Backward compatibility: accept a lone absolute time even if the message
     // doesn't label it as an ETA. If there are multiple unlabelled clock times,
     // their meaning is ambiguous, so omit the field rather than choosing the first.
-    const anyClockTime = new RegExp("(?<!\\\\d)" + clockToken + "(?!\\\\d)", "g");
+    const anyClockTime = new RegExp("(?<!\\d)" + clockToken + "(?!\\d)", "g");
     const absoluteTimes = [];
     for (const match of sourceText.matchAll(anyClockTime)) {
         absoluteTimes.push(match[1].padStart(2, "0") + ":" + match[2]);
