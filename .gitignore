@@ -1,5 +1,12 @@
 .env
+.env.*
+!.env.example
 .telegram_session
+.telegram_cursors.json
+.telegram_cursors.json.tmp
+.first-alert-state.json
+.first-alert-state.json.tmp
+data/
 .wwebjs_auth/
 .wwebjs_cache/
 node_modules/
