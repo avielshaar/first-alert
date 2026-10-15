@@ -115,48 +115,133 @@ function extractTargets(text) {
 }
 
 function extractTime(text, referenceTime = new Date()) {
+    const sourceText = typeof text === "string" ? text : String(text ?? "");
     const base = referenceTime instanceof Date
         ? new Date(referenceTime.getTime())
-        : new Date(typeof referenceTime === "number" ? referenceTime : Date.now());
+        : new Date(
+            typeof referenceTime === "number"
+                ? (referenceTime < 1e12 ? referenceTime * 1000 : referenceTime)
+                : (typeof referenceTime === "string" ? referenceTime : Date.now())
+        );
+    if (!Number.isFinite(base.getTime())) base.setTime(Date.now());
 
-    // Absolute HH:MM is kept as provided; do not reinterpret it relative to the current clock.
-    const absMatch = text.match(/(?<!\d)([0-1]?[0-9]|2[0-3]):([0-5][0-9])(?!\d)/);
-    if (absMatch) return `${absMatch[1].padStart(2, "0")}:${absMatch[2]}`;
+    const formatClockTime = (date) => date.toLocaleTimeString("he-IL", {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "Asia/Jerusalem",
+    });
+    const timeAfterMinutes = (minutes) =>
+        formatClockTime(new Date(base.getTime() + minutes * 60 * 1000));
 
-    const standaloneHour = text.match(/(?:בעוד|עוד|בתוך|תוך)\s+(?:שעה|שעתיים)(?![\u0590-\u05FF])/);
-    if (standaloneHour) {
-        const mins = standaloneHour[0].includes("שעתיים") ? 120 : 60;
-        base.setMinutes(base.getMinutes() + mins);
-        return base.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jerusalem" });
+    // Prefer an absolute clock time explicitly tied to arrival/ETA language over
+    // unrelated timestamps elsewhere in the same Telegram message.
+    const clockToken = "([01]?\\\\d|2[0-3]):([0-5]\\\\d)";
+    const explicitEtaClock = new RegExp(
+        "(?:זמן\\\\s*הגעה|צפי\\\\s*הגעה|הגעה\\\\s*(?:משוערת|צפויה)|זמן\\\\s*משוער|" +
+        "צפוי(?:ה)?\\\\s+להגיע|צפויים?\\\\s+להגיע|יגיעו?|יגיע)" +
+        "\\\\s*(?:(?:הוא|היא)\\\\s*)?(?:בשעה\\\\s*)?(?:ב\\\\s*)?[-–:=]?\\\\s*" +
+        clockToken + "(?!\\\\d)",
+        "giu"
+    );
+    const explicitTimes = [];
+    for (const match of sourceText.matchAll(explicitEtaClock)) {
+        explicitTimes.push(match[1].padStart(2, "0") + ":" + match[2]);
+    }
+    const uniqueExplicitTimes = [...new Set(explicitTimes)];
+    if (uniqueExplicitTimes.length === 1) return uniqueExplicitTimes[0];
+    if (uniqueExplicitTimes.length > 1) {
+        // Conflicting explicit ETA times are ambiguous; never guess.
+        return "";
     }
 
-    const relMatch = text.match(/(?:בעוד|עוד|בתוך|תוך|יגיעו ב|זמן הגעה)?\s*(?:כ-|-)?(\d+|אחת|אחד|שניים|שתיים|שלוש|שלושה|ארבע|ארבעה|חמש|חמישה|שש|שישה|שבע|שבעה|שמונה|תשע|עשר|עשרה|עשרים|רבע|חצי)\s*(דקות|דקה|שעה|שעות|שעתיים)(?![\u0590-\u05FF])/);
-    if (!relMatch) return "";
+    // Parse natural Hebrew durations longest-first so "שעה וחצי" isn't truncated
+    // to "שעה", and recognize only future/ETA-anchored durations. A past duration
+    // such as "לפני 10 דקות" is elapsed time, not an estimated arrival time.
+    const numberToken =
+        "(?:\\\\d+(?:[.,]\\\\d+)?|אחת\\\\s+עשרה|אחד\\\\s+עשר|שתים\\\\s+עשרה|שנים\\\\s+עשר|" +
+        "שניים|שתיים|שני|שלושה|שלוש|ארבעה|ארבע|חמישה|חמש|שישה|שש|שבעה|שבע|" +
+        "שמונה|תשעה|תשע|עשרה|עשר|עשרים|אחת|אחד|רבע|חצי)";
+    const durationPattern =
+        "(?:שעתיים\\\\s+(?:וחצי|ורבע)|שעה\\\\s+(?:וחצי|ורבע)|חצי\\\\s+שעה|רבע\\\\s+שעה|" +
+        "שעתיים|שעה|" + numberToken + "\\\\s*(?:דקות?|דק(?:ות)?[׳']?|שעות?))";
 
-    const numberMap = {
-        "אחת": 1, "אחד": 1, "שניים": 2, "שתיים": 2,
-        "שלוש": 3, "שלושה": 3, "ארבע": 4, "ארבעה": 4,
-        "חמש": 5, "חמישה": 5, "שש": 6, "שישה": 6,
-        "שבע": 7, "שבעה": 7, "שמונה": 8, "תשע": 9,
+    const hebrewNumbers = {
+        "אחת": 1, "אחד": 1, "שניים": 2, "שתיים": 2, "שני": 2,
+        "שלושה": 3, "שלוש": 3, "ארבעה": 4, "ארבע": 4,
+        "חמישה": 5, "חמש": 5, "שישה": 6, "שש": 6,
+        "שבעה": 7, "שבע": 7, "שמונה": 8, "תשעה": 9, "תשע": 9,
         "עשר": 10, "עשרה": 10, "עשרים": 20,
+        "אחת עשרה": 11, "אחד עשר": 11, "שתים עשרה": 12, "שנים עשר": 12,
         "רבע": 15, "חצי": 30,
     };
-    const numStr = relMatch[1];
-    const unit = relMatch[2];
-    const amount = Number.isFinite(Number(numStr)) ? Number(numStr) : numberMap[numStr];
-    if (!amount || amount <= 0) return "";
 
-    let mins;
-    if (unit === "שעתיים") mins = 120;
-    else if (unit === "שעה" && numStr === "חצי") mins = 30;
-    else if (unit === "שעה" && numStr === "רבע") mins = 15;
-    else if (unit === "שעה" || unit === "שעות") mins = amount * 60;
-    else mins = amount;
+    function durationToMinutes(rawDuration) {
+        const duration = rawDuration.trim().replace(/\\\\s+/g, " ");
+        if (duration === "שעה") return 60;
+        if (duration === "שעתיים") return 120;
+        if (duration === "חצי שעה") return 30;
+        if (duration === "רבע שעה") return 15;
+        if (duration === "שעה וחצי") return 90;
+        if (duration === "שעתיים וחצי") return 150;
+        if (duration === "שעה ורבע") return 75;
+        if (duration === "שעתיים ורבע") return 135;
 
-    base.setMinutes(base.getMinutes() + mins);
-    return base.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Jerusalem" });
+        const match = duration.match(/^(.+?)\\\\s*(דקות?|דק(?:ות)?[׳']?|שעות?)$/u);
+        if (!match) return null;
+        const token = match[1].trim();
+        const normalizedNumber = token.replace(",", ".");
+        const amount = /^\\\\d+(?:\\\\.\\\\d+)?$/.test(normalizedNumber)
+            ? Number(normalizedNumber)
+            : hebrewNumbers[token];
+        if (!Number.isFinite(amount) || amount <= 0) return null;
+
+        const unit = match[2];
+        const minutes = unit.startsWith("ש") ? amount * 60 : amount;
+        return Number.isFinite(minutes) && minutes > 0 ? minutes : null;
+    }
+
+    const relativeEtaPatterns = [
+        new RegExp(
+            "(?:בעוד|עוד|בתוך|תוך)\\\\s*(?:כ\\\\s*[-־]?\\\\s*)?(" + durationPattern + ")",
+            "giu"
+        ),
+        new RegExp(
+            "(?:זמן\\\\s*הגעה|צפי\\\\s*הגעה|הגעה\\\\s*(?:משוערת|צפויה)|זמן\\\\s*משוער|ETA)" +
+            "\\\\s*[:：=–-]?\\\\s*(?:בעוד\\\\s*)?(" + durationPattern + ")",
+            "giu"
+        ),
+        new RegExp(
+            "(?:צפוי(?:ה)?\\\\s+להגיע|צפויים?\\\\s+להגיע|יגיעו?|יגיע)" +
+            "\\\\s*(?:בעוד|תוך|בתוך|ב)?\\\\s*(" + durationPattern + ")",
+            "giu"
+        ),
+    ];
+
+    const relativeMinutes = new Set();
+    for (const pattern of relativeEtaPatterns) {
+        for (const match of sourceText.matchAll(pattern)) {
+            const minutes = durationToMinutes(match[1]);
+            if (minutes !== null) relativeMinutes.add(minutes);
+        }
+    }
+    if (relativeMinutes.size === 1) return timeAfterMinutes([...relativeMinutes][0]);
+    if (relativeMinutes.size > 1) {
+        // A message containing multiple different future durations may describe
+        // separate events. Without a single unambiguous ETA, omit the time.
+        return "";
+    }
+
+    // Backward compatibility: accept a lone absolute time even if the message
+    // doesn't label it as an ETA. If there are multiple unlabelled clock times,
+    // their meaning is ambiguous, so omit the field rather than choosing the first.
+    const anyClockTime = new RegExp("(?<!\\\\d)" + clockToken + "(?!\\\\d)", "g");
+    const absoluteTimes = [];
+    for (const match of sourceText.matchAll(anyClockTime)) {
+        absoluteTimes.push(match[1].padStart(2, "0") + ":" + match[2]);
+    }
+    const uniqueAbsoluteTimes = [...new Set(absoluteTimes)];
+    return uniqueAbsoluteTimes.length === 1 ? uniqueAbsoluteTimes[0] : "";
 }
-
 async function classifyMessage(channelId, messageText, lastPublished, messageTimestamp = null) {
     if (STRICT_BLACKLIST.some(word => messageText.includes(word))) {
         return { category: "IRRELEVANT", reasoning: "Blocked by deterministic blacklist.", event_key: "", source: "", target: "", estimated_time: "" };
