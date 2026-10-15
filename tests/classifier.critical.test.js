@@ -66,6 +66,14 @@ describe("critical classifier regressions", () => {
         expect(result.category).toBe("IRRELEVANT");
     });
 
+    test("does not call Gemini for deterministic region-only fragments", async () => {
+        const result = await classifyMessage("channel", "למרכז", null);
+
+        expect(result.category).toBe("IRRELEVANT");
+        expect(result.target).toBe("מרכז");
+        expect(mockGenerateContent).not.toHaveBeenCalled();
+    });
+
     test("does not treat a generic report word as an explicit launch signal", async () => {
         mockGenerateContent.mockResolvedValue({
             text: JSON.stringify({ category: "IRRELEVANT", reasoning: "Generic report text is not a launch." }),
