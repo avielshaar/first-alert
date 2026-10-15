@@ -96,6 +96,18 @@ describe("Telegram cursor persistence", () => {
         expect(fs.existsSync(file + ".tmp")).toBe(false);
     });
 
+    test.each([null, "", false, true, {}, [], "1e3", -1, 1.2, NaN])(
+        "rejects malformed cursor write input %p",
+        rawCursor => {
+            const { file } = temporaryFile();
+            fs.writeFileSync(file, JSON.stringify({ "-1001": 123 }));
+
+            expect(() => writeCursorState(file, { "-1001": 123 }, "-1001", rawCursor))
+                .toThrow("Invalid Telegram message cursor for -1001");
+            expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ "-1001": 123 });
+        }
+    );
+
     test("rejects invalid cursor values without modifying persisted state", () => {
         const { file } = temporaryFile();
         fs.writeFileSync(file, JSON.stringify({ "-1001": 123 }));
