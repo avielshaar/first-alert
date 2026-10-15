@@ -172,6 +172,13 @@ function extractTime(text, referenceTime = new Date()) {
     const timeAfterMinutes = (minutes) =>
         formatClockTime(new Date(base.getTime() + minutes * 60 * 1000));
 
+    function isNegatedEta(index) {
+        // Check only the current clause. This avoids reading "לא יגיעו בעוד 10 דקות"
+        // as an affirmative ETA while allowing a later affirmative clause to be parsed.
+        const clausePrefix = sourceText.slice(0, index).split(/[,.!?;:\n]/u).pop();
+        return /(?:^|\\s)(?:לא|אין|אינו|איננו|אינה|אינם|אינן)(?:\\s+\\S+){0,2}\\s*$/u.test(clausePrefix);
+    }
+
     // Prefer an absolute clock time explicitly tied to arrival/ETA language over
     // unrelated timestamps elsewhere in the same Telegram message.
     const clockToken = "([01]?\\d|2[0-3]):([0-5]\\d)";
@@ -183,7 +190,12 @@ function extractTime(text, referenceTime = new Date()) {
         "giu"
     );
     const explicitTimes = [];
+    let hasNegatedExplicitEta = false;
     for (const match of sourceText.matchAll(explicitEtaClock)) {
+        if (isNegatedEta(match.index)) {
+            hasNegatedExplicitEta = true;
+            continue;
+        }
         explicitTimes.push(match[1].padStart(2, "0") + ":" + match[2]);
     }
     const uniqueExplicitTimes = [...new Set(explicitTimes)];
@@ -258,8 +270,13 @@ function extractTime(text, referenceTime = new Date()) {
     ];
 
     const relativeMinutes = new Set();
+    let hasNegatedRelativeEta = false;
     for (const pattern of relativeEtaPatterns) {
         for (const match of sourceText.matchAll(pattern)) {
+            if (isNegatedEta(match.index)) {
+                hasNegatedRelativeEta = true;
+                continue;
+            }
             const minutes = durationToMinutes(match[1]);
             if (minutes !== null) relativeMinutes.add(minutes);
         }
@@ -270,6 +287,9 @@ function extractTime(text, referenceTime = new Date()) {
         // separate events. Without a single unambiguous ETA, omit the time.
         return "";
     }
+
+    // A rejected negated time must not fall through to the unlabelled-clock fallback.
+    if (hasNegatedExplicitEta || hasNegatedRelativeEta) return "";
 
     // Backward compatibility: accept a lone absolute time even if the message
     // doesn't label it as an ETA. If there are multiple unlabelled clock times,
