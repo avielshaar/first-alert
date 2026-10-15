@@ -118,6 +118,16 @@ function loadProcessorState() {
                 typeof raw.estimated_time !== "string") {
                 throw new Error("invalid pending event fields for " + id);
             }
+            if (raw.publishedBaseline !== undefined && raw.publishedBaseline !== null) {
+                if (typeof raw.publishedBaseline !== "object" || Array.isArray(raw.publishedBaseline) ||
+                    typeof raw.publishedBaseline.source !== "string" ||
+                    typeof raw.publishedBaseline.target !== "string" ||
+                    typeof raw.publishedBaseline.estimated_time !== "string" ||
+                    raw.publishedBaseline.verificationVersion !== 1 ||
+                    !Number.isFinite(raw.publishedBaseline.publishedAt)) {
+                    throw new Error("invalid publishedBaseline for " + id);
+                }
+            }
 
             highestEventNumber = Math.max(highestEventNumber, Number(keyMatch[1]));
             loadedEvents[id] = {
@@ -178,6 +188,21 @@ function getActiveEvents() { return activeEvents; }
 // their source, target, or time as verified facts; a new event must reconfirm those fields.
 function getVerifiedLastPublished() {
     return lastPublished && lastPublished.verificationVersion === 1 ? lastPublished : null;
+}
+
+// Each still-open published incident keeps its own baseline. The global baseline remains
+// useful for genuinely new incidents, but must not cause an older concurrent incident to
+// be re-published merely because another incident was published more recently.
+function getEventPublishedBaseline(event, fallbackBaseline = null, now = Date.now()) {
+    if (!event || !event.publishedBaseline) return fallbackBaseline;
+    const baseline = event.publishedBaseline;
+    const publishedAt = Number(baseline.publishedAt);
+    const validTimestamp = Number.isFinite(publishedAt) &&
+        publishedAt > 0 &&
+        publishedAt <= now + 60_000;
+    return validTimestamp && now - publishedAt < LAST_PUBLISHED_DEDUP_WINDOW_MS
+        ? baseline
+        : null;
 }
 
 // Expire the publication baseline, not the two-minute event-correlation window.
