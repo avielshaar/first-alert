@@ -59,6 +59,77 @@ describe("processor state recovery safety", () => {
         expect([...processor.getActiveEvents()["event-9"].channels]).toEqual(["-1001"]);
     });
 
+    test("does not duplicate a legacy published incident after a different incident became the global baseline", async () => {
+        const now = Date.now();
+        const state = makeState({
+            lastPublished: {
+                source: "לבנון",
+                target: "צפון",
+                estimated_time: "09:00",
+                verificationVersion: 1,
+                publishedAt: now,
+            },
+            activeEvents: {
+                "event-9": {
+                    id: "event-9",
+                    kind: "UPDATE_TO_LAST",
+                    channels: ["channel-A", "channel-B"],
+                    messages: [
+                        {
+                            channel: "channel-A",
+                            messageId: 101,
+                            text: "Iran report",
+                            reportedSource: "איראן",
+                            reportedTarget: "מרכז",
+                            reportedEstimatedTime: "10:30",
+                            time: now,
+                        },
+                        {
+                            channel: "channel-B",
+                            messageId: 201,
+                            text: "Iran corroboration",
+                            reportedSource: "איראן",
+                            reportedTarget: "מרכז",
+                            reportedEstimatedTime: "10:30",
+                            time: now + 1,
+                        },
+                    ],
+                    messageKeys: ["channel-A:101", "channel-B:201"],
+                    source: "איראן",
+                    target: "מרכז",
+                    estimated_time: "10:30",
+                    firstSeen: now - 1000,
+                    lastSeen: now,
+                    corroborationPending: true,
+                },
+            },
+        });
+        const processor = loadProcessorWithState(JSON.stringify(state));
+        const classifier = require("../src/messaging/classifier");
+        classifier.classifyMessage.mockResolvedValue({
+            category: "LAUNCH_REPORT",
+            reasoning: "repeat from a legacy published incident",
+            source: "איראן",
+            target: "מרכז",
+            estimated_time: "10:30",
+            reportedSource: "איראן",
+            reportedTarget: "מרכז",
+            reportedEstimatedTime: "10:30",
+        });
+        const callbacks = {
+            alert: jest.fn().mockResolvedValue(true),
+            update: jest.fn().mockResolvedValue(true),
+        };
+
+        const result = await processor.processMessage(
+            "channel-A", "repeat Iran report", callbacks, 301, Math.floor(now / 1000)
+        );
+
+        expect(result).toBe(true);
+        expect(callbacks.alert).not.toHaveBeenCalled();
+        expect(callbacks.update).not.toHaveBeenCalled();
+    });
+
     test("refuses to continue when processor state JSON is malformed", () => {
         expect(() => loadProcessorWithState('{"version":1,')).toThrow(
             /Refusing to start to avoid losing pending incident evidence/
