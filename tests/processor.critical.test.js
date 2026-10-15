@@ -8,6 +8,8 @@ jest.mock("../src/messaging/classifier", () => ({
     extractSource: jest.fn(text => /איראן/.test(text) ? "איראן" : /לבנון/.test(text) ? "לבנון" : ""),
     extractTargets: jest.fn(text => /מרכז|גוש דן|תל אביב/.test(text) ? "מרכז" : /דרום/.test(text) ? "דרום" : /צפון/.test(text) ? "צפון" : ""),
     extractTime: jest.fn(text => (String(text).match(/\b(?:[01]?\d|2[0-3]):[0-5]\d\b/) || [])[0] || ""),
+    isStrictlyBlacklisted: jest.fn(text => ["נפגעים", "אין סכנה", "הוסר החשש", "שריפה", "תיעוד"].some(word => String(text).includes(word))),
+    isRegionOnlyFollowUp: jest.fn(text => /^(?:(?:לעבר|לאזור|באזור|אזור|לכיוון|ולאזור|ובאזור|אל|ול|וב|ל|ב)[ -]*)?ה?(?:מרכז|דרום|צפון)(?:\s*\([^)]*\))?[\s.,!?…]*$/u.test(String(text).trim())),
 }));
 const { classifyMessage, checkForNewInfo } = require("../src/messaging/classifier");
 const {
